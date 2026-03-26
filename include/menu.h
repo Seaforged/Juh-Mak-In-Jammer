@@ -16,9 +16,10 @@ enum AppState {
     STATE_CW_ACTIVE,      // CW tone transmitting
     STATE_SWEEP_ACTIVE,   // Frequency sweep running
     STATE_ELRS_ACTIVE,    // ELRS FHSS transmitting
-    // Future states slot in here:
+    STATE_FALSEPOS_MENU,  // Mode 3 submenu
+    STATE_FP_ACTIVE,      // False positive mode running
+    // Future states:
     // STATE_RID_MENU,     // Mode 1
-    // STATE_FALSEPOS_MENU,// Mode 3
     // STATE_COMBINED_MENU,// Mode 4
     // STATE_SETTINGS,
 };

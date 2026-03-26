@@ -2,6 +2,7 @@
 #include "board_config.h"
 #include "menu.h"
 #include "rf_modes.h"
+#include "false_positive.h"
 
 // ============================================================
 // Menu state machine + button debouncer
@@ -11,6 +12,7 @@ static Adafruit_SSD1306 *_oled = nullptr;
 static AppState _state = STATE_MAIN_MENU;
 static uint8_t _mainSel = 0;
 static uint8_t _siggenSel = 0;
+static uint8_t _fpSel = 0;
 static bool _needsRedraw = true;
 
 // --- Button debounce state ---
@@ -186,6 +188,76 @@ static void drawElrsActive() {
     _oled->display();
 }
 
+static void drawFpMenu() {
+    _oled->clearDisplay();
+    drawHeader("False Positive Gen");
+
+    static const char *labels[FP_COUNT] = {
+        "LoRaWAN Sim",
+        "ISM Burst Noise",
+        "Mixed (IoT+ELRS)",
+        "<< Back",
+    };
+
+    for (uint8_t i = 0; i < FP_COUNT; i++) {
+        drawMenuItem(i, _fpSel, labels[i], 14 + i * 12);
+    }
+
+    _oled->display();
+}
+
+static void drawFpActive() {
+    _oled->clearDisplay();
+
+    FpParams f = fpGetParams();
+
+    // Header varies by sub-mode
+    switch (f.mode) {
+    case FP_LORAWAN:
+        drawHeader("FP: LoRaWAN");
+        _oled->setCursor(0, 14);
+        _oled->printf("Freq: %.1f MHz", 903.9f);
+        _oled->setCursor(0, 24);
+        _oled->printf("Last SF: %u  BW: 125k", f.lastSF);
+        _oled->setCursor(0, 34);
+        _oled->printf("Packets: %lu", (unsigned long)f.loraPacketCount);
+        _oled->setCursor(0, 44);
+        _oled->printf("Pwr: %d dBm", f.powerDbm);
+        break;
+
+    case FP_ISM_BURST:
+        drawHeader("FP: ISM Bursts");
+        _oled->setCursor(0, 14);
+        _oled->printf("Last: %.2f MHz", f.lastFreqMHz);
+        _oled->setCursor(0, 24);
+        _oled->print("Type: Random FSK");
+        _oled->setCursor(0, 34);
+        _oled->printf("Bursts: %lu", (unsigned long)f.burstCount);
+        _oled->setCursor(0, 44);
+        _oled->printf("Pwr: %d dBm", f.powerDbm);
+        break;
+
+    case FP_MIXED:
+        drawHeader("FP: Mixed IoT+ELRS");
+        _oled->setCursor(0, 14);
+        _oled->printf("ELRS pkts: %lu", (unsigned long)f.elrsPacketCount);
+        _oled->setCursor(0, 24);
+        _oled->printf("LoRaWAN:   %lu", (unsigned long)f.loraPacketCount);
+        _oled->setCursor(0, 34);
+        _oled->printf("Freq: %.2f MHz", f.lastFreqMHz);
+        _oled->setCursor(0, 44);
+        _oled->printf("Pwr: %d dBm", f.powerDbm);
+        break;
+
+    default:
+        break;
+    }
+
+    _oled->setCursor(0, 56);
+    _oled->print("LONG=stop");
+    _oled->display();
+}
+
 // ============================================================
 // State machine
 // ============================================================
@@ -217,8 +289,12 @@ void menuUpdate() {
                 _state = STATE_SIGGEN_MENU;
                 _siggenSel = 0;
                 _needsRedraw = true;
+            } else if (_mainSel == MAIN_FALSE_POS) {
+                _state = STATE_FALSEPOS_MENU;
+                _fpSel = 0;
+                _needsRedraw = true;
             }
-            // Other modes not yet implemented — ignore press
+            // Mode 1 (RID) and Mode 4 (Combined) not yet implemented
         }
         if (_needsRedraw) { drawMainMenu(); _needsRedraw = false; }
         break;
@@ -310,6 +386,43 @@ void menuUpdate() {
             if (_needsRedraw || (millis() - lastElrsRefresh > 250)) {
                 drawElrsActive();
                 lastElrsRefresh = millis();
+                _needsRedraw = false;
+            }
+        }
+        break;
+
+    // --- False Positive Submenu ---
+    case STATE_FALSEPOS_MENU:
+        if (btn == BTN_SHORT) {
+            _fpSel = (_fpSel + 1) % FP_COUNT;
+            _needsRedraw = true;
+        } else if (btn == BTN_LONG) {
+            if (_fpSel == FP_BACK) {
+                _state = STATE_MAIN_MENU;
+                _needsRedraw = true;
+            } else {
+                fpStart((FpMode)_fpSel);
+                _state = STATE_FP_ACTIVE;
+                _needsRedraw = true;
+            }
+        }
+        if (_needsRedraw) { drawFpMenu(); _needsRedraw = false; }
+        break;
+
+    // --- False Positive Active ---
+    case STATE_FP_ACTIVE:
+        fpUpdate();
+
+        if (btn == BTN_LONG) {
+            fpStop();
+            _state = STATE_FALSEPOS_MENU;
+            _needsRedraw = true;
+        }
+        {
+            static unsigned long lastFpRefresh = 0;
+            if (_needsRedraw || (millis() - lastFpRefresh > 500)) {
+                drawFpActive();
+                lastFpRefresh = millis();
                 _needsRedraw = false;
             }
         }
