@@ -8,6 +8,7 @@
 #include "menu.h"
 #include "rf_modes.h"
 #include "false_positive.h"
+#include "splash.h"
 
 // --- OLED Display ---
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
@@ -16,21 +17,23 @@ Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
 SPIClass loraSPI(HSPI);
 SX1262 radio = new Module(LORA_CS, LORA_DIO1, LORA_RST, LORA_BUSY, loraSPI);
 
-// --- Boot Screen (shown for 2 seconds) ---
+// --- Boot Splash Screen (shown for 2 seconds) ---
 static void showBootScreen() {
     display.clearDisplay();
+
+    // Drone + RF wave arcs bitmap in the top 40 pixels
+    display.drawBitmap(0, 0, splash_bmp, SPLASH_WIDTH, SPLASH_HEIGHT, SSD1306_WHITE);
+
+    // Project name centered at y=44
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
-    display.setCursor(10, 0);
-    display.println("JUH-MAK-IN JAMMER");
-    display.setCursor(40, 12);
+    display.setCursor(10, 44);
+    display.print("JUH-MAK-IN JAMMER");
+
+    // Version string centered at y=56
+    display.setCursor(40, 56);
     display.printf("v%s", JAMMER_VERSION);
-    display.setCursor(0, 28);
-    display.println("RF Test Tool");
-    display.setCursor(0, 40);
-    display.printf("Board: %s", BOARD_NAME);
-    display.setCursor(0, 56);
-    display.println("Initializing...");
+
     display.display();
 }
 

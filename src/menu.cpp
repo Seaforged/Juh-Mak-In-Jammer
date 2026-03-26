@@ -16,8 +16,8 @@ static uint8_t _fpSel = 0;
 static bool _needsRedraw = true;
 
 // --- Button debounce state ---
-static constexpr unsigned long DEBOUNCE_MS   = 50;
-static constexpr unsigned long LONG_PRESS_MS = 500;
+static constexpr unsigned long DEBOUNCE_MS   = 40;
+static constexpr unsigned long LONG_PRESS_MS = 400;
 
 static bool     _lastRaw      = HIGH;   // idle = HIGH (pull-up)
 static bool     _stable       = HIGH;
@@ -49,7 +49,10 @@ ButtonPress buttonRead() {
             // Button just released — classify the press
             _pressed = false;
             unsigned long duration = now - _pressStart;
-            return (duration >= LONG_PRESS_MS) ? BTN_LONG : BTN_SHORT;
+            ButtonPress result = (duration >= LONG_PRESS_MS) ? BTN_LONG : BTN_SHORT;
+            Serial.printf("BTN: %s (%lu ms)\n",
+                          result == BTN_LONG ? "LONG" : "SHORT", duration);
+            return result;
         }
     }
     return BTN_NONE;
@@ -265,7 +268,7 @@ static void drawFpActive() {
 void menuInit(Adafruit_SSD1306 *oled) {
     _oled = oled;
     _state = STATE_MAIN_MENU;
-    _mainSel = 0;
+    _mainSel = MAIN_RF_SIGGEN;  // default to first working mode
     _siggenSel = 0;
     _needsRedraw = true;
 }
