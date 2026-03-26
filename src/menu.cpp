@@ -1,0 +1,318 @@
+#include <Arduino.h>
+#include "board_config.h"
+#include "menu.h"
+#include "rf_modes.h"
+
+// ============================================================
+// Menu state machine + button debouncer
+// ============================================================
+
+static Adafruit_SSD1306 *_oled = nullptr;
+static AppState _state = STATE_MAIN_MENU;
+static uint8_t _mainSel = 0;
+static uint8_t _siggenSel = 0;
+static bool _needsRedraw = true;
+
+// --- Button debounce state ---
+static constexpr unsigned long DEBOUNCE_MS   = 50;
+static constexpr unsigned long LONG_PRESS_MS = 500;
+
+static bool     _lastRaw      = HIGH;   // idle = HIGH (pull-up)
+static bool     _stable       = HIGH;
+static unsigned long _lastChange = 0;
+static unsigned long _pressStart = 0;
+static bool     _pressed      = false;
+
+// ============================================================
+// Button reader — non-blocking debounce + short/long detection
+// ============================================================
+ButtonPress buttonRead() {
+    bool raw = digitalRead(BOOT_BTN);
+    unsigned long now = millis();
+
+    // Debounce: only accept a new level after it's stable for DEBOUNCE_MS
+    if (raw != _lastRaw) {
+        _lastChange = now;
+        _lastRaw = raw;
+    }
+
+    if ((now - _lastChange) >= DEBOUNCE_MS && raw != _stable) {
+        _stable = raw;
+
+        if (_stable == LOW) {
+            // Button just pressed down
+            _pressStart = now;
+            _pressed = true;
+        } else if (_pressed) {
+            // Button just released — classify the press
+            _pressed = false;
+            unsigned long duration = now - _pressStart;
+            return (duration >= LONG_PRESS_MS) ? BTN_LONG : BTN_SHORT;
+        }
+    }
+    return BTN_NONE;
+}
+
+// ============================================================
+// OLED drawing helpers
+// ============================================================
+
+static void drawHeader(const char *title) {
+    _oled->setTextSize(1);
+    _oled->setTextColor(SSD1306_WHITE);
+    _oled->setCursor(0, 0);
+    _oled->println(title);
+    // Thin separator line under header
+    _oled->drawFastHLine(0, 10, OLED_WIDTH, SSD1306_WHITE);
+}
+
+static void drawMenuItem(uint8_t index, uint8_t selected, const char *label, uint8_t y) {
+    _oled->setCursor(0, y);
+    _oled->print(index == selected ? "> " : "  ");
+    _oled->print(label);
+}
+
+// ============================================================
+// Screen renderers
+// ============================================================
+
+static void drawMainMenu() {
+    _oled->clearDisplay();
+    drawHeader("JUH-MAK-IN JAMMER");
+
+    static const char *labels[MAIN_COUNT] = {
+        "[1] RID Spoofer",
+        "[2] RF Sig Gen",
+        "[3] False Pos Gen",
+        "[4] Combined",
+    };
+
+    for (uint8_t i = 0; i < MAIN_COUNT; i++) {
+        drawMenuItem(i, _mainSel, labels[i], 14 + i * 12);
+    }
+
+    _oled->setCursor(0, 56);
+    _oled->print("SHORT=nav  LONG=sel");
+    _oled->display();
+}
+
+static void drawSigGenMenu() {
+    _oled->clearDisplay();
+    drawHeader("RF Signal Generator");
+
+    static const char *labels[SIGGEN_COUNT] = {
+        "CW Tone",
+        "Band Sweep",
+        "ELRS 915 FHSS",
+        "Crossfire (TBD)",
+        "<< Back",
+    };
+
+    for (uint8_t i = 0; i < SIGGEN_COUNT; i++) {
+        drawMenuItem(i, _siggenSel, labels[i], 14 + i * 10);
+    }
+
+    _oled->display();
+}
+
+static void drawCwActive() {
+    _oled->clearDisplay();
+    drawHeader("CW Tone - TX");
+
+    CwParams p = cwGetParams();
+
+    _oled->setCursor(0, 14);
+    _oled->printf("Freq: %.2f MHz", p.freqMHz);
+    _oled->setCursor(0, 26);
+    _oled->printf("Power: %d dBm", p.powerDbm);
+    _oled->setCursor(0, 38);
+    _oled->print("Status: ");
+    _oled->print(p.transmitting ? "TX ON" : "TX OFF");
+
+    _oled->setCursor(0, 52);
+    _oled->print("SHORT=freq  LONG=stop");
+    _oled->display();
+}
+
+static void drawSweepActive() {
+    _oled->clearDisplay();
+    drawHeader("Band Sweep - TX");
+
+    SweepParams s = sweepGetParams();
+
+    _oled->setCursor(0, 14);
+    _oled->printf("%.1f -> %.1f MHz", s.startMHz, s.endMHz);
+    _oled->setCursor(0, 24);
+    _oled->printf("Now: %.2f MHz", s.currentMHz);
+
+    // Progress bar: visual indicator of sweep position
+    uint8_t barWidth = 100;
+    uint8_t barX = 14;
+    uint8_t barY = 34;
+    _oled->drawRect(barX, barY, barWidth, 6, SSD1306_WHITE);
+    if (s.totalSteps > 0) {
+        uint8_t fill = (uint8_t)((uint32_t)s.stepIndex * (barWidth - 2) / s.totalSteps);
+        _oled->fillRect(barX + 1, barY + 1, fill, 4, SSD1306_WHITE);
+    }
+
+    _oled->setCursor(0, 42);
+    _oled->printf("Step:%.0fkHz Dwell:%uus", s.stepMHz * 1000.0f, s.dwellUs);
+    _oled->setCursor(0, 52);
+    _oled->printf("Pwr:%ddBm ", s.powerDbm);
+    _oled->print(s.running ? "TX" : "OFF");
+
+    _oled->setCursor(0, 58);
+    _oled->print("SH=step  LG=stop");
+    _oled->display();
+}
+
+static void drawElrsActive() {
+    _oled->clearDisplay();
+    drawHeader("ELRS 915 - FHSS TX");
+
+    ElrsParams e = elrsGetParams();
+
+    _oled->setCursor(0, 14);
+    _oled->printf("Ch: %u/80  %.2f MHz", e.channelIndex, e.currentMHz);
+    _oled->setCursor(0, 24);
+    _oled->printf("Pkts: %lu", (unsigned long)e.packetCount);
+    _oled->setCursor(0, 34);
+    _oled->printf("Hops: %lu", (unsigned long)e.hopCount);
+    _oled->setCursor(0, 44);
+    _oled->printf("Pwr: %d dBm  SF6 BW500", e.powerDbm);
+
+    _oled->setCursor(0, 56);
+    _oled->print("LONG=stop");
+    _oled->display();
+}
+
+// ============================================================
+// State machine
+// ============================================================
+
+void menuInit(Adafruit_SSD1306 *oled) {
+    _oled = oled;
+    _state = STATE_MAIN_MENU;
+    _mainSel = 0;
+    _siggenSel = 0;
+    _needsRedraw = true;
+}
+
+AppState menuGetState() {
+    return _state;
+}
+
+void menuUpdate() {
+    ButtonPress btn = buttonRead();
+
+    switch (_state) {
+
+    // --- Main Menu ---
+    case STATE_MAIN_MENU:
+        if (btn == BTN_SHORT) {
+            _mainSel = (_mainSel + 1) % MAIN_COUNT;
+            _needsRedraw = true;
+        } else if (btn == BTN_LONG) {
+            if (_mainSel == MAIN_RF_SIGGEN) {
+                _state = STATE_SIGGEN_MENU;
+                _siggenSel = 0;
+                _needsRedraw = true;
+            }
+            // Other modes not yet implemented — ignore press
+        }
+        if (_needsRedraw) { drawMainMenu(); _needsRedraw = false; }
+        break;
+
+    // --- Signal Generator Submenu ---
+    case STATE_SIGGEN_MENU:
+        if (btn == BTN_SHORT) {
+            _siggenSel = (_siggenSel + 1) % SIGGEN_COUNT;
+            _needsRedraw = true;
+        } else if (btn == BTN_LONG) {
+            if (_siggenSel == SIGGEN_CW_TONE) {
+                cwStart();
+                _state = STATE_CW_ACTIVE;
+                _needsRedraw = true;
+            } else if (_siggenSel == SIGGEN_SWEEP) {
+                sweepStart();
+                _state = STATE_SWEEP_ACTIVE;
+                _needsRedraw = true;
+            } else if (_siggenSel == SIGGEN_ELRS) {
+                elrsStart();
+                _state = STATE_ELRS_ACTIVE;
+                _needsRedraw = true;
+            } else if (_siggenSel == SIGGEN_BACK) {
+                _state = STATE_MAIN_MENU;
+                _needsRedraw = true;
+            }
+            // Crossfire not yet implemented — ignore
+        }
+        if (_needsRedraw) { drawSigGenMenu(); _needsRedraw = false; }
+        break;
+
+    // --- CW Tone Active ---
+    case STATE_CW_ACTIVE:
+        if (btn == BTN_SHORT) {
+            cwCycleFreq();
+            _needsRedraw = true;
+        } else if (btn == BTN_LONG) {
+            cwStop();
+            _state = STATE_SIGGEN_MENU;
+            _needsRedraw = true;
+        }
+        // Refresh display every 500 ms to show live status
+        {
+            static unsigned long lastRefresh = 0;
+            if (_needsRedraw || (millis() - lastRefresh > 500)) {
+                drawCwActive();
+                lastRefresh = millis();
+                _needsRedraw = false;
+            }
+        }
+        break;
+
+    // --- Frequency Sweep Active ---
+    case STATE_SWEEP_ACTIVE:
+        // Advance the sweep each loop iteration (non-blocking, dwell-gated)
+        sweepUpdate();
+
+        if (btn == BTN_SHORT) {
+            sweepCycleStep();
+            _needsRedraw = true;
+        } else if (btn == BTN_LONG) {
+            sweepStop();
+            _state = STATE_SIGGEN_MENU;
+            _needsRedraw = true;
+        }
+        // Refresh display at ~10 Hz so the frequency counter feels live
+        {
+            static unsigned long lastSweepRefresh = 0;
+            if (_needsRedraw || (millis() - lastSweepRefresh > 100)) {
+                drawSweepActive();
+                lastSweepRefresh = millis();
+                _needsRedraw = false;
+            }
+        }
+        break;
+
+    // --- ELRS FHSS Active ---
+    case STATE_ELRS_ACTIVE:
+        elrsUpdate();
+
+        if (btn == BTN_LONG) {
+            elrsStop();
+            _state = STATE_SIGGEN_MENU;
+            _needsRedraw = true;
+        }
+        // Refresh at 4 Hz — hop rate (200 Hz) is too fast to show every hop
+        {
+            static unsigned long lastElrsRefresh = 0;
+            if (_needsRedraw || (millis() - lastElrsRefresh > 250)) {
+                drawElrsActive();
+                lastElrsRefresh = millis();
+                _needsRedraw = false;
+            }
+        }
+        break;
+    }
+}
