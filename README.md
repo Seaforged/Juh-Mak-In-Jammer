@@ -4,7 +4,7 @@
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 ![Platform: ESP32-S3](https://img.shields.io/badge/Platform-ESP32--S3-blue.svg)
-![Version: v1.0](https://img.shields.io/badge/Version-v1.0-orange.svg)
+![Version: v1.1.0](https://img.shields.io/badge/Version-v1.1.0-orange.svg)
 
 ## What It Does
 
