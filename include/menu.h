@@ -21,6 +21,8 @@ enum AppState {
     STATE_RID_ACTIVE,     // Mode 1: RID spoofer running
     STATE_COMBINED_ACTIVE,// Mode 4: Combined RID + ELRS
     STATE_SWARM_ACTIVE,   // Mode 5: Drone swarm simulator
+    STATE_CROSSFIRE_ACTIVE,
+    STATE_RAMP_ACTIVE,
 };
 
 // Main menu item indices
@@ -38,7 +40,8 @@ enum SigGenMenuItem {
     SIGGEN_CW_TONE = 0,
     SIGGEN_SWEEP,
     SIGGEN_ELRS,
-    SIGGEN_CROSSFIRE,   // not yet implemented
+    SIGGEN_CROSSFIRE,
+    SIGGEN_POWER_RAMP,
     SIGGEN_BACK,
     SIGGEN_COUNT
 };

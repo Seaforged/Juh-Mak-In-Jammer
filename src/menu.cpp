@@ -6,6 +6,8 @@
 #include "rid_spoofer.h"
 #include "combined_mode.h"
 #include "swarm_sim.h"
+#include "crossfire.h"
+#include "power_ramp.h"
 
 // ============================================================
 // Menu state machine + button debouncer
@@ -113,7 +115,8 @@ static void drawSigGenMenu() {
         "CW Tone",
         "Band Sweep",
         "ELRS 915 FHSS",
-        "Crossfire (TBD)",
+        "Crossfire 915",
+        "Power Ramp",
         "<< Back",
     };
 
@@ -390,11 +393,18 @@ void menuUpdate() {
                 elrsStart();
                 _state = STATE_ELRS_ACTIVE;
                 _needsRedraw = true;
+            } else if (_siggenSel == SIGGEN_CROSSFIRE) {
+                crossfireStart();
+                _state = STATE_CROSSFIRE_ACTIVE;
+                _needsRedraw = true;
+            } else if (_siggenSel == SIGGEN_POWER_RAMP) {
+                powerRampStart();
+                _state = STATE_RAMP_ACTIVE;
+                _needsRedraw = true;
             } else if (_siggenSel == SIGGEN_BACK) {
                 _state = STATE_MAIN_MENU;
                 _needsRedraw = true;
             }
-            // Crossfire not yet implemented — ignore
         }
         if (_needsRedraw) { drawSigGenMenu(); _needsRedraw = false; }
         break;
@@ -534,6 +544,90 @@ void menuUpdate() {
             if (_needsRedraw || (millis() - lastCmbRefresh > 500)) {
                 drawCombinedActive();
                 lastCmbRefresh = millis();
+                _needsRedraw = false;
+            }
+        }
+        break;
+
+    // --- Crossfire Active ---
+    case STATE_CROSSFIRE_ACTIVE:
+        crossfireUpdate();
+
+        if (btn == BTN_LONG) {
+            crossfireStop();
+            _state = STATE_SIGGEN_MENU;
+            _needsRedraw = true;
+        }
+        {
+            static unsigned long lastCrsfRefresh = 0;
+            if (_needsRedraw || (millis() - lastCrsfRefresh > 250)) {
+                _oled->clearDisplay();
+                _oled->setTextSize(1);
+                _oled->setTextColor(SSD1306_WHITE);
+                _oled->setCursor(0, 0);
+                _oled->println("CROSSFIRE 915 - TX");
+                _oled->drawFastHLine(0, 10, OLED_WIDTH, SSD1306_WHITE);
+
+                CrossfireParams cp = crossfireGetParams();
+                _oled->setCursor(0, 14);
+                _oled->printf("Ch: %u/100  %.2f MHz", cp.channelIndex, cp.currentMHz);
+                _oled->setCursor(0, 24);
+                _oled->printf("Pkts: %lu", (unsigned long)cp.packetCount);
+                _oled->setCursor(0, 34);
+                _oled->printf("Hops: %lu", (unsigned long)cp.hopCount);
+                _oled->setCursor(0, 44);
+                _oled->printf("Pwr: %d dBm  FSK 85k", cp.powerDbm);
+                _oled->setCursor(0, 56);
+                _oled->print("LONG=stop");
+                _oled->display();
+
+                lastCrsfRefresh = millis();
+                _needsRedraw = false;
+            }
+        }
+        break;
+
+    // --- Power Ramp Active ---
+    case STATE_RAMP_ACTIVE:
+        powerRampUpdate();
+
+        if (btn == BTN_SHORT) {
+            powerRampCycleDuration();
+            _needsRedraw = true;
+        } else if (btn == BTN_LONG) {
+            powerRampStop();
+            _state = STATE_SIGGEN_MENU;
+            _needsRedraw = true;
+        }
+        {
+            static unsigned long lastRampRefresh = 0;
+            if (_needsRedraw || (millis() - lastRampRefresh > 250)) {
+                _oled->clearDisplay();
+                _oled->setTextSize(1);
+                _oled->setTextColor(SSD1306_WHITE);
+                _oled->setCursor(0, 0);
+                _oled->println("POWER RAMP - TX");
+                _oled->drawFastHLine(0, 10, OLED_WIDTH, SSD1306_WHITE);
+
+                PowerRampParams rp = powerRampGetParams();
+                _oled->setCursor(0, 14);
+                _oled->printf("Pwr: %+d dBm  %s", rp.currentPowerDbm,
+                              rp.ascending ? ">>>" : "<<<");
+                // Power bar
+                uint8_t barFill = (uint8_t)(((float)(rp.currentPowerDbm + 9) / 31.0f) * 100);
+                _oled->drawRect(14, 25, 100, 6, SSD1306_WHITE);
+                _oled->fillRect(15, 26, barFill, 4, SSD1306_WHITE);
+
+                _oled->setCursor(0, 34);
+                _oled->printf("T: %lu / %lu sec", (unsigned long)rp.elapsedSec,
+                              (unsigned long)rp.rampDurationSec);
+                _oled->setCursor(0, 44);
+                _oled->printf("Pkts: %lu  %.1f MHz", (unsigned long)rp.packetCount, rp.currentMHz);
+                _oled->setCursor(0, 56);
+                _oled->print("SH=dur  LG=stop");
+                _oled->display();
+
+                lastRampRefresh = millis();
                 _needsRedraw = false;
             }
         }

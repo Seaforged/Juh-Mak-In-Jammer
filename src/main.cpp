@@ -11,6 +11,8 @@
 #include "rid_spoofer.h"
 #include "combined_mode.h"
 #include "swarm_sim.h"
+#include "crossfire.h"
+#include "power_ramp.h"
 #include "splash.h"
 
 // --- OLED Display ---
@@ -84,6 +86,8 @@ void setup() {
     ridInit();
     combinedInit(&radio);
     swarmInit();
+    crossfireInit(&radio);
+    powerRampInit(&radio);
     menuInit(&display);
 
     // Hold boot screen for 2 seconds so user can read it
@@ -123,6 +127,8 @@ static void stopCurrentMode() {
     if (st == STATE_RID_ACTIVE)      ridStop();
     if (st == STATE_COMBINED_ACTIVE) combinedStop();
     if (st == STATE_SWARM_ACTIVE)    swarmStop();
+    if (st == STATE_CROSSFIRE_ACTIVE) crossfireStop();
+    if (st == STATE_RAMP_ACTIVE)     powerRampStop();
 }
 
 // --- Serial command parser ---
@@ -239,7 +245,9 @@ void loop() {
     bool txActive = (st == STATE_CW_ACTIVE || st == STATE_SWEEP_ACTIVE
                      || st == STATE_ELRS_ACTIVE || st == STATE_FP_ACTIVE
                      || st == STATE_RID_ACTIVE || st == STATE_COMBINED_ACTIVE
-                     || st == STATE_SWARM_ACTIVE);
+                     || st == STATE_SWARM_ACTIVE
+                     || st == STATE_CROSSFIRE_ACTIVE
+                     || st == STATE_RAMP_ACTIVE);
     unsigned long blinkRate = txActive ? 200 : 1000;
 
     if (millis() - lastBlink >= blinkRate) {
