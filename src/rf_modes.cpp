@@ -262,8 +262,15 @@ static uint8_t  _elrsPktsSinceHop = 0;
 static float    _elrsCurrentMHz = 0;
 static unsigned long _elrsLastPktUs = 0;
 
-// 8-byte dummy payload matching real ELRS packet size
-static const uint8_t ELRS_PAYLOAD[] = { 0xE1, 0x25, 0x00, 0x00, 0x05, 0x7A, 0x3C, 0xAA };
+// Dummy payloads matching real ELRS packet sizes per air rate — v2 §3.1.2
+static const uint8_t ELRS_PAYLOAD_8[]  = { 0xE1, 0x25, 0x00, 0x00, 0x05, 0x7A, 0x3C, 0xAA };
+static const uint8_t ELRS_PAYLOAD_10[] = { 0xE1, 0x25, 0x00, 0x00, 0x05, 0x7A, 0x3C, 0xAA, 0x55, 0xBB };
+
+void elrsSetRate(uint8_t rateIndex) {
+    if (rateIndex < ELRS_AIR_RATE_COUNT) {
+        _elrsRate = &ELRS_AIR_RATES[rateIndex];
+    }
+}
 
 // Build pseudo-random hop sequence using LCG-seeded Fisher-Yates shuffle.
 // Uses real ELRS LCG constants (0x343FD / 0x269EC3) from protocol_params.h.
@@ -332,8 +339,9 @@ void elrsStart() {
     _elrsRunning = true;
     _elrsLastPktUs = micros();
 
-    // Transmit first packet immediately (non-blocking)
-    _radio->startTransmit(ELRS_PAYLOAD, sizeof(ELRS_PAYLOAD));
+    // Select payload size based on air rate — v2 §3.1.2
+    const uint8_t* payload = (rate.payloadLen <= 8) ? ELRS_PAYLOAD_8 : ELRS_PAYLOAD_10;
+    _radio->startTransmit(payload, rate.payloadLen);
     _elrsPacketCount++;
     _elrsPktsSinceHop = 1;
 
@@ -393,7 +401,8 @@ void elrsUpdate() {
         _radio->setFrequency(nextFreq);
     }
 
-    _radio->startTransmit(ELRS_PAYLOAD, sizeof(ELRS_PAYLOAD));
+    const uint8_t* payload = (_elrsRate->payloadLen <= 8) ? ELRS_PAYLOAD_8 : ELRS_PAYLOAD_10;
+    _radio->startTransmit(payload, _elrsRate->payloadLen);
     _elrsPacketCount++;
     _elrsPktsSinceHop++;
 }

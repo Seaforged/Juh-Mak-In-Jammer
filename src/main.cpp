@@ -104,7 +104,8 @@ void setup() {
     Serial.println();
     Serial.println("Serial commands:");
     Serial.println("  c = CW tone mode");
-    Serial.println("  e = ELRS 915 FHSS mode");
+    Serial.println("  e = ELRS 200Hz FCC915 (default)");
+    Serial.println("  e1-e6 = ELRS rate (200/100/50/25/D250/D500)");
     Serial.println("  b = Band sweep mode");
     Serial.println("  r = RID spoofer (WiFi+BLE)");
     Serial.println("  m = Mixed false positive (LoRaWAN+ELRS)");
@@ -176,12 +177,23 @@ static void handleSerialCommands() {
           Serial.printf("[MODE] CW Tone: %.2f MHz, %d dBm\n", p.freqMHz, p.powerDbm); }
         break;
 
-    case 'e':   // ELRS 915 FHSS
+    case 'e': { // ELRS FHSS — optional digit selects air rate (e1-e6)
+        // Peek for a following digit within 50ms
+        delay(50);
+        uint8_t rateIdx = 0;  // default: 200 Hz
+        if (Serial.available()) {
+            char next = Serial.peek();
+            if (next >= '1' && next <= '6') {
+                Serial.read();  // consume the digit
+                rateIdx = next - '1';  // '1'→0, '2'→1, ... '6'→5
+            }
+        }
         stopCurrentMode();
+        elrsSetRate(rateIdx);
         elrsStart();
         menuSetState(STATE_ELRS_ACTIVE);
-        Serial.printf("[MODE] ELRS 915 FHSS: %d dBm\n", rfGetPower());
         break;
+    }
 
     case 'b':   // Band Sweep
         stopCurrentMode();

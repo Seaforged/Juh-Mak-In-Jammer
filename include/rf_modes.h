@@ -57,6 +57,7 @@ struct ElrsParams {
 };
 
 // --- ELRS 915 Simulation API ---
+void elrsSetRate(uint8_t rateIndex);  // set air rate (0-5, indexes ELRS_AIR_RATES)
 void elrsStart();              // begin FHSS transmission
 void elrsStop();               // stop and return to standby
 void elrsUpdate();             // call every loop() — handles hop timing
