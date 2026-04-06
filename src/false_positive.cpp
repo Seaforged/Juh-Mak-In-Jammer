@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "false_positive.h"
-#include "rf_modes.h"   // for rfGetPower(), elrs reuse
+#include "rf_modes.h"   // for rfGetPower()
+#include "protocol_params.h"
 
 // ============================================================
 // False Positive Generator — LoRaWAN, ISM bursts, and Mixed
@@ -42,7 +43,7 @@ static uint32_t rngRange(uint32_t lo, uint32_t hi) {
 // Real LoRaWAN: SF7-SF12, BW125, single channel, low duty cycle.
 // One transmission every 30-60 seconds — typical IoT sensor.
 
-static constexpr float LORAWAN_FREQ = 903.9f;  // US LoRaWAN uplink ch 0
+// LoRaWAN frequencies now from protocol_params.h LORAWAN_US915_SB2[]
 static unsigned long _loraNextTxMs = 0;
 
 // Randomized dummy payload (20-50 bytes, mimics sensor data)
@@ -50,18 +51,22 @@ static uint8_t _loraBuf[50];
 
 static void lorawanConfigRadio() {
     // Pick a random SF between 7-12 for each transmission
-    // Real LoRaWAN devices use ADR which varies SF
+    // Real LoRaWAN devices use ADR which varies SF — v2 §4.1
     _lastSF = (uint8_t)rngRange(7, 12);
+
+    // Pick a random SB2 channel — v2 §4.1 [Ref R7]
+    uint8_t chIdx = rngNext() % LORAWAN_US915_SB2_COUNT;
+    _lastFreq = LORAWAN_US915_SB2[chIdx];
 
     _radio->standby();
     _radio->begin(
-        LORAWAN_FREQ,
-        125.0,       // BW 125 kHz (standard LoRaWAN)
+        _lastFreq,
+        125.0,                  // BW 125 kHz (standard LoRaWAN)
         _lastSF,
-        5,           // CR 4/5
-        RADIOLIB_SX126X_SYNC_WORD_PRIVATE,
+        5,                      // CR 4/5
+        SYNC_WORD_LORAWAN,      // 0x34 public LoRa — v2 §6.3
         rfGetPower(),
-        8,           // preamble
+        LORAWAN_PREAMBLE_LEN,   // 8 symbols — v2 §6.2
         1.8, false
     );
     _radio->explicitHeader();
@@ -76,7 +81,7 @@ static void lorawanTransmit() {
         _loraBuf[i] = (uint8_t)(rngNext() & 0xFF);
     }
 
-    _lastFreq = LORAWAN_FREQ;
+    // _lastFreq was set by lorawanConfigRadio via SB2 channel selection
     _radio->transmit(_loraBuf, len);
     _loraCount++;
 
@@ -84,7 +89,7 @@ static void lorawanTransmit() {
     _loraNextTxMs = millis() + rngRange(30000, 60000);
 
     Serial.printf("LoRaWAN TX: SF%u BW125 @ %.1f MHz, %u bytes\n",
-                  _lastSF, LORAWAN_FREQ, len);
+                  _lastSF, _lastFreq, len);
 }
 
 // ============================================================
@@ -144,16 +149,11 @@ static void ismBurstTransmit() {
 static bool _mixedElrsConfigured = false;
 static unsigned long _mixedLoraNextMs = 0;
 
-// ELRS FCC915 channel table (matches rf_modes.cpp)
-static constexpr uint8_t  MIX_ELRS_CHANNELS = 40;
-static constexpr float    MIX_ELRS_START     = 903.5f;
-static constexpr float    MIX_ELRS_END       = 926.9f;
-static constexpr float    MIX_ELRS_SPACING   = (MIX_ELRS_END - MIX_ELRS_START) / MIX_ELRS_CHANNELS;
-static constexpr uint32_t MIX_PKT_US         = 5000;  // 200 Hz packet rate
-static constexpr uint8_t  MIX_HOP_EVERY_N    = 4;     // hop every 4 packets
-static constexpr uint8_t  MIX_SYNC_CHANNEL   = 20;    // midpoint sync channel
+// ELRS parameters from protocol_params.h — no local duplicates
+static const ElrsDomain&  _mixDom  = ELRS_DOMAINS[ELRS_DOMAIN_FCC915];
+static const ElrsAirRate& _mixRate = ELRS_AIR_RATES[ELRS_RATE_200HZ];
 
-static uint8_t  _mixHopSeq[MIX_ELRS_CHANNELS];
+static uint8_t  _mixHopSeq[80];  // sized for largest domain
 static uint8_t  _mixHopIdx = 0;
 static uint8_t  _mixPktsSinceHop = 0;
 static uint32_t _mixHopCount = 0;
@@ -161,44 +161,41 @@ static unsigned long _mixLastPktUs = 0;
 static const uint8_t MIX_ELRS_PAYLOAD[] = { 0xE1, 0x25, 0x00, 0x00, 0x05, 0x7A, 0x3C, 0xAA };
 
 static void mixBuildHopSequence() {
-    for (uint8_t i = 0; i < MIX_ELRS_CHANNELS; i++) _mixHopSeq[i] = i;
+    uint8_t numCh = _mixDom.channels;
+    for (uint8_t i = 0; i < numCh; i++) _mixHopSeq[i] = i;
     uint32_t rng = 0xCAFEBABE;
-    for (uint8_t i = MIX_ELRS_CHANNELS - 1; i > 0; i--) {
-        rng = rng * 1664525UL + 1013904223UL;
-        uint8_t j = rng % (i + 1);
+    for (uint8_t i = numCh - 1; i > 0; i--) {
+        rng = rng * ELRS_LCG_MULTIPLIER + ELRS_LCG_INCREMENT;
+        uint8_t j = (rng >> 16) % (i + 1);
         uint8_t tmp = _mixHopSeq[i];
         _mixHopSeq[i] = _mixHopSeq[j];
         _mixHopSeq[j] = tmp;
     }
-    _mixHopSeq[0] = MIX_SYNC_CHANNEL;
+    _mixHopSeq[0] = _mixDom.syncChannel;
 }
 
 static void mixConfigElrs() {
     _radio->standby();
-    float freq = MIX_ELRS_START + (_mixHopSeq[_mixHopIdx] * MIX_ELRS_SPACING);
-    _radio->begin(freq, 500.0, 6, 5,
-                  RADIOLIB_SX126X_SYNC_WORD_PRIVATE,
-                  rfGetPower(), 8, 1.8, false);
+    float freq = elrsChanFreq(_mixDom, _mixHopSeq[_mixHopIdx]);
+    _radio->begin(freq, (float)(_mixRate.bwHz / 1000), _mixRate.sf, _mixRate.cr,
+                  SYNC_WORD_ELRS, rfGetPower(), _mixRate.preambleLen, 1.8, false);
     _radio->explicitHeader();
     _mixedElrsConfigured = true;
 }
 
 static void mixElrsTx() {
-    // Hop every 4 packets
-    if (_mixPktsSinceHop >= MIX_HOP_EVERY_N) {
+    uint8_t numCh    = _mixDom.channels;
+    uint8_t hopEvery = _mixRate.hopInterval;
+
+    if (_mixPktsSinceHop >= hopEvery) {
         _mixPktsSinceHop = 0;
-        _mixHopIdx = (_mixHopIdx + 1) % MIX_ELRS_CHANNELS;
+        _mixHopIdx = (_mixHopIdx + 1) % numCh;
         _mixHopCount++;
 
-        // Sync channel every freq_count hops
-        uint8_t nextChan;
-        if ((_mixHopCount % MIX_ELRS_CHANNELS) == 0) {
-            nextChan = MIX_SYNC_CHANNEL;
-        } else {
-            nextChan = _mixHopSeq[_mixHopIdx];
-        }
+        uint8_t nextChan = ((_mixHopCount % numCh) == 0)
+            ? _mixDom.syncChannel : _mixHopSeq[_mixHopIdx];
 
-        float freq = MIX_ELRS_START + (nextChan * MIX_ELRS_SPACING);
+        float freq = elrsChanFreq(_mixDom, nextChan);
         _lastFreq = freq;
         _radio->setFrequency(freq);
     }
@@ -276,7 +273,7 @@ void fpStop() {
 
     // Reconfigure radio back to default for other modes
     _radio->begin(915.0, 125.0, 9, 7,
-                  RADIOLIB_SX126X_SYNC_WORD_PRIVATE, 10, 8, 1.8, false);
+                  SYNC_WORD_ELRS, 10, 8, 1.8, false);
 
     Serial.printf("FP stopped: %lu LoRaWAN, %lu bursts, %lu ELRS\n",
                   (unsigned long)_loraCount,
@@ -310,9 +307,10 @@ void fpUpdate() {
             _mixPktsSinceHop = 0;  // reset after radio reconfig
         }
 
-        // ELRS packets at 200 Hz (hop every 4)
+        // ELRS packets at configured rate — all from protocol_params.h
+        uint32_t mixPktUs = 1000000UL / _mixRate.rateHz;
         unsigned long nowUs = micros();
-        if ((nowUs - _mixLastPktUs) >= MIX_PKT_US) {
+        if ((nowUs - _mixLastPktUs) >= mixPktUs) {
             _mixLastPktUs = nowUs;
             mixElrsTx();
         }

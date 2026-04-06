@@ -248,7 +248,7 @@ static void drawFpActive() {
     case FP_LORAWAN:
         drawHeader("FP: LoRaWAN");
         _oled->setCursor(0, 14);
-        _oled->printf("Freq: %.1f MHz", 903.9f);
+        _oled->printf("Freq: %.1f MHz", f.lastFreqMHz);
         _oled->setCursor(0, 24);
         _oled->printf("Last SF: %u  BW: 125k", f.lastSF);
         _oled->setCursor(0, 34);

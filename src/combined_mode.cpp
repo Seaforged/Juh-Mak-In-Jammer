@@ -2,6 +2,7 @@
 #include "combined_mode.h"
 #include "rid_spoofer.h"
 #include "rf_modes.h"
+#include "protocol_params.h"
 
 // ============================================================
 // Combined Mode — RID (Core 0) + ELRS (Core 1 FreeRTOS task)
@@ -24,29 +25,25 @@ static volatile bool _elrsTaskRunning = false;
 static volatile uint32_t _elrsTaskPkts = 0;
 static volatile uint32_t _elrsTaskHops = 0;
 
-// ELRS FCC915 channel table (matches rf_modes.cpp)
-static constexpr uint8_t  CMB_ELRS_CHANNELS = 40;
-static constexpr float    CMB_ELRS_START    = 903.5f;
-static constexpr float    CMB_ELRS_END      = 926.9f;
-static constexpr float    CMB_ELRS_SPACING  = (CMB_ELRS_END - CMB_ELRS_START) / CMB_ELRS_CHANNELS;
-static constexpr uint32_t CMB_PKT_US        = 5000;   // 200 Hz packet rate
-static constexpr uint8_t  CMB_HOP_EVERY_N   = 4;      // hop every 4 packets
-static constexpr uint8_t  CMB_SYNC_CHANNEL  = 20;     // midpoint sync channel
+// ELRS parameters from protocol_params.h — no local duplicates
+static const ElrsDomain&  _cmbDom  = ELRS_DOMAINS[ELRS_DOMAIN_FCC915];
+static const ElrsAirRate& _cmbRate = ELRS_AIR_RATES[ELRS_RATE_200HZ];
 
-static uint8_t _cmbHopSeq[CMB_ELRS_CHANNELS];
+static uint8_t _cmbHopSeq[80];  // sized for largest domain
 static const uint8_t CMB_PAYLOAD[] = { 0xE1, 0x25, 0x00, 0x00, 0x05, 0x7A, 0x3C, 0xAA };
 
 static void cmbBuildHopSequence() {
-    for (uint8_t i = 0; i < CMB_ELRS_CHANNELS; i++) _cmbHopSeq[i] = i;
+    uint8_t numCh = _cmbDom.channels;
+    for (uint8_t i = 0; i < numCh; i++) _cmbHopSeq[i] = i;
     uint32_t rng = 0xFEEDFACE;
-    for (uint8_t i = CMB_ELRS_CHANNELS - 1; i > 0; i--) {
-        rng = rng * 1664525UL + 1013904223UL;
-        uint8_t j = rng % (i + 1);
+    for (uint8_t i = numCh - 1; i > 0; i--) {
+        rng = rng * ELRS_LCG_MULTIPLIER + ELRS_LCG_INCREMENT;
+        uint8_t j = (rng >> 16) % (i + 1);
         uint8_t tmp = _cmbHopSeq[i];
         _cmbHopSeq[i] = _cmbHopSeq[j];
         _cmbHopSeq[j] = tmp;
     }
-    _cmbHopSeq[0] = CMB_SYNC_CHANNEL;
+    _cmbHopSeq[0] = _cmbDom.syncChannel;
 }
 
 // FreeRTOS task running ELRS FHSS on Core 1
@@ -56,37 +53,33 @@ static void elrsTask(void *param) {
     uint8_t pktsSinceHop = 0;
     uint32_t hopCount = 0;
 
-    // Configure radio for ELRS mode
+    uint8_t  numCh    = _cmbDom.channels;
+    uint8_t  hopEvery = _cmbRate.hopInterval;
+    uint32_t pktUs    = 1000000UL / _cmbRate.rateHz;
+
+    // Configure radio from protocol_params.h
     radio->standby();
-    float freq = CMB_ELRS_START + (_cmbHopSeq[0] * CMB_ELRS_SPACING);
-    radio->begin(freq, 500.0, 6, 5,
-                 RADIOLIB_SX126X_SYNC_WORD_PRIVATE,
-                 rfGetPower(), 8, 1.8, false);
+    float freq = elrsChanFreq(_cmbDom, _cmbHopSeq[0]);
+    radio->begin(freq, (float)(_cmbRate.bwHz / 1000), _cmbRate.sf, _cmbRate.cr,
+                 SYNC_WORD_ELRS, rfGetPower(), _cmbRate.preambleLen, 1.8, false);
     radio->explicitHeader();
 
     unsigned long lastPktUs = micros();
 
     while (_elrsTaskRunning) {
         unsigned long nowUs = micros();
-        if ((nowUs - lastPktUs) >= CMB_PKT_US) {
+        if ((nowUs - lastPktUs) >= pktUs) {
             lastPktUs = nowUs;
 
-            // Hop every 4 packets
-            if (pktsSinceHop >= CMB_HOP_EVERY_N) {
+            if (pktsSinceHop >= hopEvery) {
                 pktsSinceHop = 0;
-                hopIdx = (hopIdx + 1) % CMB_ELRS_CHANNELS;
+                hopIdx = (hopIdx + 1) % numCh;
                 hopCount++;
                 _elrsTaskHops++;
 
-                // Sync channel every freq_count hops
-                uint8_t nextChan;
-                if ((hopCount % CMB_ELRS_CHANNELS) == 0) {
-                    nextChan = CMB_SYNC_CHANNEL;
-                } else {
-                    nextChan = _cmbHopSeq[hopIdx];
-                }
-
-                freq = CMB_ELRS_START + (nextChan * CMB_ELRS_SPACING);
+                uint8_t nextChan = ((hopCount % numCh) == 0)
+                    ? _cmbDom.syncChannel : _cmbHopSeq[hopIdx];
+                freq = elrsChanFreq(_cmbDom, nextChan);
                 radio->setFrequency(freq);
             }
 
@@ -95,13 +88,11 @@ static void elrsTask(void *param) {
             pktsSinceHop++;
         }
 
-        // Yield briefly to prevent watchdog trigger
         vTaskDelay(1);
     }
 
     radio->standby();
-    radio->begin(915.0, 125.0, 9, 7,
-                 RADIOLIB_SX126X_SYNC_WORD_PRIVATE, 10, 8, 1.8, false);
+    radio->begin(915.0, 125.0, 9, 7, SYNC_WORD_ELRS, 10, 8, 1.8, false);
     vTaskDelete(NULL);
 }
 

@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include "power_ramp.h"
+#include "protocol_params.h"
 
 // ============================================================
 // Power Ramp — drone approach simulation via ELRS FHSS
@@ -7,16 +8,11 @@
 
 static SX1262 *_radio = nullptr;
 
-// ELRS FCC915 parameters (matches rf_modes.cpp)
-static constexpr uint8_t  ELRS_NUM_CHANNELS     = 40;
-static constexpr float    ELRS_BAND_START       = 903.5f;
-static constexpr float    ELRS_BAND_END         = 926.9f;
-static constexpr float    ELRS_CHAN_SPACING      = (ELRS_BAND_END - ELRS_BAND_START) / ELRS_NUM_CHANNELS;
-static constexpr uint32_t ELRS_PACKET_INTERVAL_US = 5000;
-static constexpr uint8_t  ELRS_HOP_EVERY_N      = 4;
-static constexpr uint8_t  ELRS_SYNC_CHANNEL     = 20;
+// ELRS parameters from protocol_params.h — no local duplicates
+static const ElrsDomain&  _rampDom  = ELRS_DOMAINS[ELRS_DOMAIN_FCC915];
+static const ElrsAirRate& _rampRate = ELRS_AIR_RATES[ELRS_RATE_200HZ];
 
-static uint8_t _hopSeq[ELRS_NUM_CHANNELS];
+static uint8_t _hopSeq[80];  // sized for largest domain
 static uint8_t _hopIdx = 0;
 
 // Power ramp state
@@ -28,7 +24,7 @@ static bool     _running       = false;
 static uint32_t _packetCount   = 0;
 static uint32_t _hopCount      = 0;
 static uint8_t  _pktsSinceHop  = 0;
-static float    _currentMHz    = ELRS_BAND_START;
+static float    _currentMHz    = 0;
 static int8_t   _currentPwr    = PWR_MIN;
 static bool     _ascending     = true;
 static unsigned long _startMs  = 0;
@@ -41,24 +37,21 @@ static const uint8_t DURATION_COUNT = sizeof(DURATION_PRESETS) / sizeof(DURATION
 static uint8_t _durationIdx = 1;  // default 60s
 static uint32_t _rampDuration = 60;
 
-// Dummy ELRS payload
-static const uint8_t RAMP_PAYLOAD[] = { 0xE1, 0x25, 0x00, 0x00 };
+// 8-byte payload matching real ELRS 200 Hz packet size — v2 §3.1.2
+static const uint8_t RAMP_PAYLOAD[] = { 0xE1, 0x25, 0x00, 0x00, 0x05, 0x7A, 0x3C, 0xAA };
 
 static void buildHopSequence() {
-    for (uint8_t i = 0; i < ELRS_NUM_CHANNELS; i++) _hopSeq[i] = i;
+    uint8_t numCh = _rampDom.channels;
+    for (uint8_t i = 0; i < numCh; i++) _hopSeq[i] = i;
     uint32_t rng = 0xCAFEBABE;
-    for (uint8_t i = ELRS_NUM_CHANNELS - 1; i > 0; i--) {
-        rng = rng * 1664525UL + 1013904223UL;
-        uint8_t j = rng % (i + 1);
+    for (uint8_t i = numCh - 1; i > 0; i--) {
+        rng = rng * ELRS_LCG_MULTIPLIER + ELRS_LCG_INCREMENT;
+        uint8_t j = (rng >> 16) % (i + 1);
         uint8_t tmp = _hopSeq[i];
         _hopSeq[i] = _hopSeq[j];
         _hopSeq[j] = tmp;
     }
-    _hopSeq[0] = ELRS_SYNC_CHANNEL;
-}
-
-static float chanToFreq(uint8_t chan) {
-    return ELRS_BAND_START + (chan * ELRS_CHAN_SPACING);
+    _hopSeq[0] = _rampDom.syncChannel;
 }
 
 void powerRampInit(SX1262 *radio) {
@@ -77,15 +70,14 @@ void powerRampStart() {
     _currentPwr = PWR_MIN;
     _ascending = true;
 
-    // Full reset + configure for ELRS LoRa SF6 BW500
+    // Full reset + configure from protocol_params.h
     _radio->reset();
     delay(100);
 
     int state = _radio->begin(
-        chanToFreq(_hopSeq[0]),
-        500.0, 6, 5,
-        RADIOLIB_SX126X_SYNC_WORD_PRIVATE,
-        PWR_MIN, 8, 1.8, false
+        elrsChanFreq(_rampDom, _hopSeq[0]),
+        (float)(_rampRate.bwHz / 1000), _rampRate.sf, _rampRate.cr,
+        SYNC_WORD_ELRS, PWR_MIN, _rampRate.preambleLen, 1.8, false
     );
 
     if (state != RADIOLIB_ERR_NONE) {
@@ -97,7 +89,7 @@ void powerRampStart() {
     _radio->explicitHeader();
     _radio->setCurrentLimit(140.0);
 
-    _currentMHz = chanToFreq(_hopSeq[0]);
+    _currentMHz = elrsChanFreq(_rampDom, _hopSeq[0]);
     _startMs = millis();
     _lastHopUs = micros();
     _lastPwrMs = millis();
@@ -124,25 +116,22 @@ void powerRampUpdate() {
     unsigned long nowUs = micros();
     unsigned long nowMs = millis();
 
-    // FHSS packets at 200 Hz, hop every 4 packets
-    if ((nowUs - _lastHopUs) >= ELRS_PACKET_INTERVAL_US) {
+    // FHSS packets, hop every N packets — all from protocol_params.h
+    uint32_t pktIntervalUs = 1000000UL / _rampRate.rateHz;
+    if ((nowUs - _lastHopUs) >= pktIntervalUs) {
         _lastHopUs = nowUs;
 
-        // Hop every 4 packets
-        if (_pktsSinceHop >= ELRS_HOP_EVERY_N) {
+        uint8_t numCh    = _rampDom.channels;
+        uint8_t hopEvery = _rampRate.hopInterval;
+
+        if (_pktsSinceHop >= hopEvery) {
             _pktsSinceHop = 0;
-            _hopIdx = (_hopIdx + 1) % ELRS_NUM_CHANNELS;
+            _hopIdx = (_hopIdx + 1) % numCh;
             _hopCount++;
 
-            // Sync channel every freq_count hops
-            uint8_t nextChan;
-            if ((_hopCount % ELRS_NUM_CHANNELS) == 0) {
-                nextChan = ELRS_SYNC_CHANNEL;
-            } else {
-                nextChan = _hopSeq[_hopIdx];
-            }
-
-            _currentMHz = chanToFreq(nextChan);
+            uint8_t nextChan = ((_hopCount % numCh) == 0)
+                ? _rampDom.syncChannel : _hopSeq[_hopIdx];
+            _currentMHz = elrsChanFreq(_rampDom, nextChan);
             _radio->setFrequency(_currentMHz);
         }
 
