@@ -24,6 +24,7 @@ enum AppState {
     STATE_CROSSFIRE_ACTIVE,
     STATE_RAMP_ACTIVE,
     STATE_SIK_ACTIVE,
+    STATE_MLRS_ACTIVE,
 };
 
 // Main menu item indices

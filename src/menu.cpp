@@ -9,6 +9,7 @@
 #include "crossfire.h"
 #include "power_ramp.h"
 #include "sik_radio.h"
+#include "mlrs_sim.h"
 
 // ============================================================
 // Menu state machine + button debouncer
@@ -729,6 +730,44 @@ void menuUpdate() {
                 _oled->display();
 
                 lastSikRefresh = millis();
+                _needsRedraw = false;
+            }
+        }
+        break;
+
+    // --- mLRS Active ---
+    case STATE_MLRS_ACTIVE:
+        mlrsUpdate();
+
+        if (btn == BTN_LONG) {
+            mlrsStop();
+            _state = STATE_SIGGEN_MENU;
+            _needsRedraw = true;
+        }
+        {
+            static unsigned long lastMlrsRefresh = 0;
+            if (_needsRedraw || (millis() - lastMlrsRefresh > 250)) {
+                _oled->clearDisplay();
+                _oled->setTextSize(1);
+                _oled->setTextColor(SSD1306_WHITE);
+                _oled->setCursor(0, 0);
+                _oled->println("mLRS - TX");
+                _oled->drawFastHLine(0, 10, OLED_WIDTH, SSD1306_WHITE);
+
+                MlrsParams mp = mlrsGetParams();
+                _oled->setCursor(0, 14);
+                _oled->printf("Ch:%u/20  %.1f MHz", mp.channelIndex, mp.currentMHz);
+                _oled->setCursor(0, 24);
+                _oled->printf("%s  %uHz sym", mp.isLoRa ? "LoRa" : "FSK", mp.rateHz);
+                _oled->setCursor(0, 34);
+                _oled->printf("Pkts: %lu  Hops: %lu", (unsigned long)mp.packetCount, (unsigned long)mp.hopCount);
+                _oled->setCursor(0, 44);
+                _oled->printf("Pwr: %d dBm", mp.powerDbm);
+                _oled->setCursor(0, 56);
+                _oled->print("LONG=stop");
+                _oled->display();
+
+                lastMlrsRefresh = millis();
                 _needsRedraw = false;
             }
         }
