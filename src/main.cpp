@@ -13,6 +13,7 @@
 #include "swarm_sim.h"
 #include "crossfire.h"
 #include "power_ramp.h"
+#include "sik_radio.h"
 #include "protocol_params.h"
 #include "splash.h"
 
@@ -91,6 +92,7 @@ void setup() {
     swarmInit();
     crossfireInit(&radio);
     powerRampInit(&radio);
+    sikInit(&radio);
     menuInit(&display);
 
     // Hold boot screen for 2 seconds so user can read it
@@ -109,6 +111,8 @@ void setup() {
     Serial.println("  e1-e6 = ELRS rate (200/100/50/25/D250/D500)");
     Serial.println("  e1f/a/u/i = ELRS domain (FCC/AU/EU/IN)");
     Serial.println("  e1fb = ELRS binding→connected sequence");
+    Serial.println("  k = SiK Radio GFSK 64kbps (default)");
+    Serial.println("  k1-k3 = SiK speed (64/125/250 kbps)");
     Serial.println("  b = Band sweep mode");
     Serial.println("  r = RID spoofer (WiFi+BLE)");
     Serial.println("  m = Mixed false positive (LoRaWAN+ELRS)");
@@ -135,6 +139,7 @@ static void stopCurrentMode() {
     if (st == STATE_SWARM_ACTIVE)    swarmStop();
     if (st == STATE_CROSSFIRE_ACTIVE) crossfireStop();
     if (st == STATE_RAMP_ACTIVE)     powerRampStop();
+    if (st == STATE_SIK_ACTIVE)      sikStop();
 }
 
 // --- Serial command parser ---
@@ -228,6 +233,23 @@ static void handleSerialCommands() {
         break;
     }
 
+    case 'k': { // SiK Radio GFSK — optional digit selects air speed
+        delay(50);
+        uint8_t speedIdx = 1;  // default: 64 kbps (index 1 in SIK_AIR_SPEEDS_KBPS)
+        if (Serial.available()) {
+            char c = Serial.peek();
+            if (c >= '1' && c <= '3') {
+                Serial.read();
+                speedIdx = c - '1' + 1;  // '1'→1(64k), '2'→2(125k), '3'→3(250k)
+            }
+        }
+        stopCurrentMode();
+        sikSetSpeed(speedIdx);
+        sikStart();
+        menuSetState(STATE_SIK_ACTIVE);
+        break;
+    }
+
     case 'b':   // Band Sweep
         stopCurrentMode();
         sweepStart();
@@ -294,7 +316,8 @@ void loop() {
                      || st == STATE_RID_ACTIVE || st == STATE_COMBINED_ACTIVE
                      || st == STATE_SWARM_ACTIVE
                      || st == STATE_CROSSFIRE_ACTIVE
-                     || st == STATE_RAMP_ACTIVE);
+                     || st == STATE_RAMP_ACTIVE
+                     || st == STATE_SIK_ACTIVE);
     unsigned long blinkRate = txActive ? 200 : 1000;
 
     if (millis() - lastBlink >= blinkRate) {

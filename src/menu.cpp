@@ -8,6 +8,7 @@
 #include "swarm_sim.h"
 #include "crossfire.h"
 #include "power_ramp.h"
+#include "sik_radio.h"
 
 // ============================================================
 // Menu state machine + button debouncer
@@ -690,6 +691,44 @@ void menuUpdate() {
                 _oled->display();
 
                 lastSwarmRefresh = millis();
+                _needsRedraw = false;
+            }
+        }
+        break;
+
+    // --- SiK Radio Active ---
+    case STATE_SIK_ACTIVE:
+        sikUpdate();
+
+        if (btn == BTN_LONG) {
+            sikStop();
+            _state = STATE_SIGGEN_MENU;
+            _needsRedraw = true;
+        }
+        {
+            static unsigned long lastSikRefresh = 0;
+            if (_needsRedraw || (millis() - lastSikRefresh > 250)) {
+                _oled->clearDisplay();
+                _oled->setTextSize(1);
+                _oled->setTextColor(SSD1306_WHITE);
+                _oled->setCursor(0, 0);
+                _oled->println("SiK RADIO - TX");
+                _oled->drawFastHLine(0, 10, OLED_WIDTH, SSD1306_WHITE);
+
+                SikParams sp = sikGetParams();
+                _oled->setCursor(0, 14);
+                _oled->printf("Ch:%u/50  %.1f MHz", sp.channelIndex, sp.currentMHz);
+                _oled->setCursor(0, 24);
+                _oled->printf("GFSK %.0f kbps", sp.airSpeedKbps);
+                _oled->setCursor(0, 34);
+                _oled->printf("Pkts: %lu  Hops: %lu", (unsigned long)sp.packetCount, (unsigned long)sp.hopCount);
+                _oled->setCursor(0, 44);
+                _oled->printf("Pwr: %d dBm", sp.powerDbm);
+                _oled->setCursor(0, 56);
+                _oled->print("LONG=stop");
+                _oled->display();
+
+                lastSikRefresh = millis();
                 _needsRedraw = false;
             }
         }

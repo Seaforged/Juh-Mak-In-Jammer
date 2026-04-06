@@ -23,6 +23,7 @@ enum AppState {
     STATE_SWARM_ACTIVE,   // Mode 5: Drone swarm simulator
     STATE_CROSSFIRE_ACTIVE,
     STATE_RAMP_ACTIVE,
+    STATE_SIK_ACTIVE,
 };
 
 // Main menu item indices
