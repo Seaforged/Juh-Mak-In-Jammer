@@ -53,19 +53,22 @@ static void printHelp() {
 
     Serial.println("DRONE PROTOCOLS:");
     Serial.println("  e  ELRS FHSS      e1-e6=rate  f/a/u/i=domain  b=binding");
+    Serial.println("  g  Crossfire FSK  150Hz GFSK 85.1kbps FHSS");
     Serial.println("  k  SiK Radio      k1=64k  k2=125k  k3=250k");
     Serial.println("  l  mLRS           l1=19Hz  l2=31Hz  l3=50Hz(FSK)");
     Serial.println("  u  Custom LoRa    u?=settings  uf/us/ub/ur/uh/up/uw=config");
 
     Serial.println("\nINFRASTRUCTURE (False Positive Testing):");
-    Serial.println("  m  LoRaWAN US915  Mixed FP (8 SB2 channels + ELRS)");
+    Serial.println("  i  LoRaWAN US915  Single node, 8 SB2 channels, 30-60s");
+    Serial.println("  m  Mixed FP       LoRaWAN + ELRS interleaved");
     Serial.println("  f1 Meshtastic     16-sym preamble, sync 0x2B");
     Serial.println("  f2 Helium PoC     5 hotspots, rotating SB2 channels");
     Serial.println("  f3 LoRaWAN EU868  868.1/868.3/868.5 MHz");
 
     Serial.println("\nSPECIAL MODES:");
-    Serial.println("  c  CW Tone        b=sweep  w=power ramp  x=combined");
+    Serial.println("  c  CW Tone        b=sweep  t=power ramp");
     Serial.println("  r  Remote ID      WiFi+BLE ASTM F3411 broadcast");
+    Serial.println("  x  Combined       RID(Core0) + ELRS(Core1)");
     Serial.println("  w  Drone Swarm    n=cycle count (1/4/8/16)");
 
     Serial.println("\nCONTROLS:");
@@ -279,6 +282,25 @@ static void handleSerialCommands() {
         menuSetState(STATE_MLRS_ACTIVE);
         break;
     }
+
+    case 'g':   // Crossfire FSK
+        stopCurrentMode();
+        crossfireStart();
+        menuSetState(STATE_CROSSFIRE_ACTIVE);
+        break;
+
+    case 'i':   // LoRaWAN US915 standalone false positive
+        stopCurrentMode();
+        fpStart(FP_LORAWAN);
+        menuSetState(STATE_FP_ACTIVE);
+        Serial.printf("[MODE] LoRaWAN US915 FP: SB2 channels, %d dBm\n", rfGetPower());
+        break;
+
+    case 't':   // Power Ramp (drone approach simulation)
+        stopCurrentMode();
+        powerRampStart();
+        menuSetState(STATE_RAMP_ACTIVE);
+        break;
 
     case 'f': { // Infrastructure false positive modes — f1/f2/f3
         delay(50);
