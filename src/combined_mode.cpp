@@ -62,7 +62,10 @@ static void elrsTask(void *param) {
     float freq = elrsChanFreq(_cmbDom, _cmbHopSeq[0]);
     radio->begin(freq, (float)(_cmbRate.bwHz / 1000), _cmbRate.sf, _cmbRate.cr,
                  SYNC_WORD_ELRS, rfGetPower(), _cmbRate.preambleLen, 1.8, false);
-    radio->explicitHeader();
+    // Real ELRS uses implicit header (v2 §3.1.4). CMB_PAYLOAD is always
+    // 8 bytes and _cmbRate is fixed at 200 Hz FCC915 (payloadLen=8), so
+    // the fixed length matches every transmit() call in this task.
+    radio->implicitHeader(_cmbRate.payloadLen);
 
     unsigned long lastPktUs = micros();
 

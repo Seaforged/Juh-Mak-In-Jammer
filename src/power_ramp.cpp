@@ -86,7 +86,9 @@ void powerRampStart() {
         return;
     }
 
-    _radio->explicitHeader();
+    // Real ELRS uses implicit header (v2 §3.1.4). RAMP_PAYLOAD is an
+    // 8-byte packet and _rampRate is fixed at 200 Hz (payloadLen=8).
+    _radio->implicitHeader(_rampRate.payloadLen);
     _radio->setCurrentLimit(140.0);
 
     _currentMHz = elrsChanFreq(_rampDom, _hopSeq[0]);

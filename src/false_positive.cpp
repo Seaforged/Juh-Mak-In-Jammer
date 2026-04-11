@@ -179,7 +179,12 @@ static void mixConfigElrs() {
     float freq = elrsChanFreq(_mixDom, _mixHopSeq[_mixHopIdx]);
     _radio->begin(freq, (float)(_mixRate.bwHz / 1000), _mixRate.sf, _mixRate.cr,
                   SYNC_WORD_ELRS, rfGetPower(), _mixRate.preambleLen, 1.8, false);
-    _radio->explicitHeader();
+    // Real ELRS uses implicit header (v2 §3.1.4). MIX_ELRS_PAYLOAD is
+    // 8 bytes and _mixRate is fixed at 200 Hz FCC915 (payloadLen=8).
+    // The LoRaWAN burst path re-configures the radio via begin() +
+    // explicitHeader() from lorawanConfigRadio(), and returning here
+    // re-installs the implicit header state for the ELRS side.
+    _radio->implicitHeader(_mixRate.payloadLen);
     _mixedElrsConfigured = true;
 }
 

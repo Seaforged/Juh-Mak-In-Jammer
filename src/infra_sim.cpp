@@ -211,8 +211,13 @@ static void euUpdate() {
     );
     _radio->explicitHeader();
 
-    fillRandomPayload(rngRange(15, 40));
-    _radio->transmit(_payload, rngRange(15, 40));
+    // Length capped at sizeof(_payload) = 30. Previous code called
+    // rngRange(15, 40) twice and passed two DIFFERENT random values into
+    // fillRandomPayload() and transmit(), with the transmit length
+    // potentially exceeding the 30-byte buffer. Store it once.
+    uint8_t len = (uint8_t)rngRange(15, 30);
+    fillRandomPayload(len);
+    _radio->transmit(_payload, len);
     _packetCount++;
 
     _lastFreq = freq;

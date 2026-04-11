@@ -249,6 +249,17 @@ static void wifiTransmitBeacon() {
 
 static uint8_t _bleAdvData[31];  // max BLE 4 adv payload
 
+// BLE 4 Legacy advertising has a hard 31-byte cap on the entire advertising
+// payload. After the mandatory Flags AD (3 bytes) and the Service Data AD
+// header (length, type, 2-byte UUID, 1-byte app code = 5 bytes), only 23
+// bytes remain for ODID data — the full 25-byte ODID message will not fit.
+// We truncate to 23 bytes, dropping the last two (reserved/padding for
+// Basic ID; Location byte 23 is the timestamp-low byte and byte 24 is the
+// accuracy field — both are lost for Location messages under BLE 4 Legacy).
+// A fully spec-compliant emitter would either fragment across advertisements
+// or use BLE 5 Coded PHY extended advertising.
+static const uint8_t BLE4_ODID_MSG_SIZE = 23;
+
 static void bleGapCallback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
     // We don't need to handle any events for advertising-only mode
     (void)event;
@@ -295,21 +306,26 @@ static void bleTransmitOdid() {
     _bleAdvData[pos++] = 0x06;  // LE General Discoverable + BR/EDR Not Supported
 
     // Service Data AD struct with ODID message
-    uint8_t svcDataLen = 2 + 1 + ODID_MSG_SIZE;  // UUID(2) + msg_counter(1) + message(25)
+    // UUID(2) + app_code(1) + truncated_message(23) = 26 bytes of data
+    uint8_t svcDataLen = 2 + 1 + BLE4_ODID_MSG_SIZE;
     _bleAdvData[pos++] = svcDataLen + 1;  // AD length (includes type byte)
     _bleAdvData[pos++] = 0x16;            // type: Service Data - 16-bit UUID
     _bleAdvData[pos++] = 0xFA;            // UUID low byte (0xFFFA)
     _bleAdvData[pos++] = 0xFF;            // UUID high byte
     _bleAdvData[pos++] = 0x0D;            // ODID app code + message counter
 
-    // Alternate between Basic ID and Location messages each cycle
+    // Build the full 25-byte ODID message into a stack temp (the build
+    // functions memset ODID_MSG_SIZE bytes and will overflow _bleAdvData
+    // if given &_bleAdvData[pos] directly), then copy the first 23 bytes.
+    uint8_t tempMsg[ODID_MSG_SIZE];
     static bool sendBasicId = true;
     if (sendBasicId) {
-        buildBasicIdMsg(&_bleAdvData[pos]);
+        buildBasicIdMsg(tempMsg);
     } else {
-        buildLocationMsg(&_bleAdvData[pos]);
+        buildLocationMsg(tempMsg);
     }
-    pos += ODID_MSG_SIZE;
+    memcpy(&_bleAdvData[pos], tempMsg, BLE4_ODID_MSG_SIZE);
+    pos += BLE4_ODID_MSG_SIZE;
     sendBasicId = !sendBasicId;
 
     esp_ble_gap_config_adv_data_raw(_bleAdvData, pos);

@@ -350,7 +350,10 @@ void elrsStart() {
         return;
     }
 
-    _radio->explicitHeader();
+    // Real ELRS uses implicit header (no explicit header byte sequence) —
+    // v2 §3.1.4. The length passed here must match every startTransmit()
+    // length below; both are rate.payloadLen.
+    _radio->implicitHeader(rate.payloadLen);
     _radio->setCurrentLimit(140.0);
 
     _elrsCurrentMHz = startFreq;
@@ -408,7 +411,10 @@ void elrsStartBinding() {
         return;
     }
 
-    _radio->explicitHeader();
+    // Binding phase always sends the 8-byte beacon; implicit header length
+    // matches ELRS_PAYLOAD_8. On transition to connected FHSS below, the
+    // header length is re-set to rate.payloadLen if the rate uses 10 bytes.
+    _radio->implicitHeader(8);
     _radio->setCurrentLimit(140.0);
 
     _elrsCurrentMHz = syncFreq;
@@ -447,8 +453,12 @@ void elrsUpdate() {
             Serial.printf("[ELRS-%s] BINDING: 10s elapsed, transitioning to FHSS...\n",
                           _elrsDomain->name);
 
-            // Build hop sequence and switch to connected FHSS
+            // Build hop sequence and switch to connected FHSS.
+            // Re-set implicit header length because the binding phase was
+            // configured for 8-byte beacons and the connected rate may use
+            // 10 bytes (SF7/8/9 air rates).
             elrsBuildHopSequence(0xDEADBEEF);
+            _radio->implicitHeader(_elrsRate->payloadLen);
             _elrsHopIdx = 0;
             _elrsHopCount = 0;
             _elrsPktsSinceHop = 0;
