@@ -1,0 +1,16 @@
+{
+  "name": "opendroneid",
+  "version": "2.0.0",
+  "description": "ASTM F3411 / Open Drone ID core C library (encoding + decoding). Vendored from https://github.com/opendroneid/opendroneid-core-c master. Used in Phase 4 for Remote ID emission.",
+  "keywords": "odid, remote-id, astm, f3411",
+  "authors": [
+    { "name": "Open Drone ID contributors", "url": "https://github.com/opendroneid/opendroneid-core-c" }
+  ],
+  "license": "Apache-2.0",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "srcFilter": ["+<*.c>", "+<*.h>"],
+    "flags": ["-Wno-unused-function"]
+  }
+}
