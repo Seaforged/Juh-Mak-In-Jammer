@@ -22,6 +22,7 @@ static TaskHandle_t _elrsTaskHandle = nullptr;
 
 // ELRS task state (runs on Core 1)
 static volatile bool _elrsTaskRunning = false;
+static volatile bool _elrsTaskExited  = false;
 static volatile uint32_t _elrsTaskPkts = 0;
 static volatile uint32_t _elrsTaskHops = 0;
 
@@ -98,8 +99,9 @@ static void elrsTask(void *param) {
                 radio->setFrequency(freq);
             }
 
-            radio->transmit(CMB_PAYLOAD, sizeof(CMB_PAYLOAD));
-            _elrsTaskPkts++;
+            if (radio->transmit(CMB_PAYLOAD, sizeof(CMB_PAYLOAD)) == RADIOLIB_ERR_NONE) {
+                _elrsTaskPkts++;
+            }
             pktsSinceHop++;
         }
 
@@ -108,6 +110,7 @@ static void elrsTask(void *param) {
 
     radio->standby();
     radio->begin(915.0, 125.0, 9, 7, SYNC_WORD_ELRS, 10, 8, 1.8, false);
+    _elrsTaskExited = true;
     vTaskDelete(NULL);
 }
 
@@ -133,6 +136,7 @@ void combinedStart() {
 
     // Launch ELRS on Core 1 as a pinned FreeRTOS task
     _elrsTaskRunning = true;
+    _elrsTaskExited  = false;
     xTaskCreatePinnedToCore(
         elrsTask,           // task function
         "elrs_tx",          // name
@@ -149,11 +153,16 @@ void combinedStart() {
 }
 
 void combinedStop() {
-    // Stop ELRS task first
+    // Signal the Core 1 task to exit and wait for confirmation. The task
+    // sets _elrsTaskExited = true right before vTaskDelete(NULL). We poll
+    // for up to 200 ms rather than relying on a fixed delay — if the task
+    // is mid-transmit (~4 ms worst case) this is ample time.
     _elrsTaskRunning = false;
     if (_elrsTaskHandle) {
-        // Give the task time to exit cleanly
-        vTaskDelay(pdMS_TO_TICKS(50));
+        uint32_t deadline = millis() + 200;
+        while (!_elrsTaskExited && millis() < deadline) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
         _elrsTaskHandle = nullptr;
     }
 

@@ -9,18 +9,22 @@
 // ============================================================
 
 struct CrossfireParams {
-    float    currentMHz;
-    uint8_t  channelIndex;
-    uint32_t packetCount;
-    uint32_t hopCount;
-    int8_t   powerDbm;
-    bool     running;
+    float       currentMHz;
+    uint8_t     channelIndex;
+    uint32_t    packetCount;
+    uint32_t    hopCount;
+    int8_t      powerDbm;
+    bool        running;
+    bool        isLoRa;
+    const char *bandName;
 };
 
 void crossfireInit(SX1262 *radio);
-void crossfireStart();
+void crossfireSetBand(uint8_t bandIdx);  // 0=CRSF_BAND_915, 1=CRSF_BAND_868
+void crossfireStart();                    // FSK 150 Hz (backward compatible)
+void crossfireStartLoRa();               // LoRa 50 Hz (new)
 void crossfireStop();
-void crossfireUpdate();          // call every loop()
+void crossfireUpdate();                   // call every loop()
 CrossfireParams crossfireGetParams();
 
 #endif // CROSSFIRE_H

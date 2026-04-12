@@ -150,12 +150,13 @@ void mlrsStart() {
     _lastFrameUs = micros();
 
     // Transmit first packet
+    int16_t txRc;
     if (mode.isLoRa) {
-        _radio->startTransmit(MLRS_LORA_PAYLOAD, params.payloadLen);
+        txRc = _radio->startTransmit(MLRS_LORA_PAYLOAD, params.payloadLen);
     } else {
-        _radio->transmit(_mlrsFskPayload, params.payloadLen);
+        txRc = _radio->transmit(_mlrsFskPayload, params.payloadLen);
     }
-    _packetCount++;
+    if (txRc == RADIOLIB_ERR_NONE) _packetCount++;
 
     // Protocol info output — v2 §7.2
     // Symmetric hopping: effective hop rate = packet_rate / 2
@@ -197,12 +198,13 @@ void mlrsUpdate() {
 
     if (_isTxPhase) {
         // TX phase: transmit on current channel
+        int16_t txRc;
         if (mode.isLoRa) {
-            _radio->startTransmit(MLRS_LORA_PAYLOAD, params.payloadLen);
+            txRc = _radio->startTransmit(MLRS_LORA_PAYLOAD, params.payloadLen);
         } else {
-            _radio->transmit(_mlrsFskPayload, params.payloadLen);
+            txRc = _radio->transmit(_mlrsFskPayload, params.payloadLen);
         }
-        _packetCount++;
+        if (txRc == RADIOLIB_ERR_NONE) _packetCount++;
         _isTxPhase = false;  // next frame is RX (silence)
     } else {
         // RX phase: silence (simulate receiver listening), then hop

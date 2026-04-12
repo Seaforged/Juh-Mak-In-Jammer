@@ -203,8 +203,9 @@ void customLoraStart() {
     _running = true;
     _lastTxUs = micros();
 
-    _radio->startTransmit(CUSTOM_PAYLOAD, sizeof(CUSTOM_PAYLOAD));
-    _packetCount++;
+    if (_radio->startTransmit(CUSTOM_PAYLOAD, sizeof(CUSTOM_PAYLOAD)) == RADIOLIB_ERR_NONE) {
+        _packetCount++;
+    }
 
     // Protocol info output
     Serial.printf("[CustomLoRa] %.3fMHz SF%u/BW%.0f %uHz sync=0x%02X %ddBm",
@@ -252,8 +253,9 @@ void customLoraUpdate() {
         }
     }
 
-    _radio->startTransmit(CUSTOM_PAYLOAD, sizeof(CUSTOM_PAYLOAD));
-    _packetCount++;
+    if (_radio->startTransmit(CUSTOM_PAYLOAD, sizeof(CUSTOM_PAYLOAD)) == RADIOLIB_ERR_NONE) {
+        _packetCount++;
+    }
 }
 
 CustomLoraParams customLoraGetParams() {

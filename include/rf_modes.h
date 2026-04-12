@@ -63,8 +63,8 @@ struct ElrsParams {
 // --- ELRS FHSS Simulation API ---
 void elrsSetRate(uint8_t rateIndex);    // set air rate (0-5, indexes ELRS_AIR_RATES)
 void elrsSetDomain(uint8_t domIndex);   // set domain (0-8, indexes ELRS_DOMAINS)
-void elrsStartBinding();                // begin binding→connected sequence
-void elrsStart();                       // begin FHSS transmission (connected state)
+bool elrsStartBinding();                // begin binding→connected sequence; false on radio error
+bool elrsStart();                       // begin FHSS transmission; false on radio error
 void elrsStop();                        // stop and return to standby
 void elrsUpdate();                      // call every loop() — handles hop timing + binding FSM
 ElrsParams elrsGetParams();             // get current state for display

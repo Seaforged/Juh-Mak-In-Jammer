@@ -594,19 +594,22 @@ void menuUpdate() {
                 _oled->clearDisplay();
                 _oled->setTextSize(1);
                 _oled->setTextColor(SSD1306_WHITE);
+                CrossfireParams cp = crossfireGetParams();
                 _oled->setCursor(0, 0);
-                _oled->println("CROSSFIRE 915 - TX");
+                _oled->printf("CRSF %s %s - TX",
+                              cp.bandName, cp.isLoRa ? "LoRa" : "FSK");
                 _oled->drawFastHLine(0, 10, OLED_WIDTH, SSD1306_WHITE);
 
-                CrossfireParams cp = crossfireGetParams();
                 _oled->setCursor(0, 14);
-                _oled->printf("Ch: %u/100  %.1f MHz", cp.channelIndex, cp.currentMHz);
+                _oled->printf("Ch:%u  %.1f MHz", cp.channelIndex, cp.currentMHz);
                 _oled->setCursor(0, 24);
                 _oled->printf("Pkts: %lu", (unsigned long)cp.packetCount);
                 _oled->setCursor(0, 34);
                 _oled->printf("Hops: %lu", (unsigned long)cp.hopCount);
                 _oled->setCursor(0, 44);
-                _oled->printf("Pwr:%ddBm FSK 85k", cp.powerDbm);
+                _oled->printf("Pwr:%ddBm %s",
+                              cp.powerDbm,
+                              cp.isLoRa ? "LoRa 50Hz" : "FSK 85k 150Hz");
                 _oled->setCursor(0, 56);
                 _oled->print("LONG=stop");
                 _oled->display();

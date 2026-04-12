@@ -335,21 +335,39 @@ static void bleTransmitOdid() {
     _bleAdvData[pos++] = 0x16;            // type: Service Data - 16-bit UUID
     _bleAdvData[pos++] = 0xFA;            // UUID low byte (0xFFFA)
     _bleAdvData[pos++] = 0xFF;            // UUID high byte
-    _bleAdvData[pos++] = 0x0D;            // ODID app code + message counter
+    // AD counter byte per ASTM F3411-22a §5.4.6.4: upper nibble = application
+    // code (0x0 for ODID), lower nibble = message counter (0-15, wraps).
+    // Compliant receivers use this to deduplicate repeated advertisements.
+    static uint8_t bleLocationCounter = 0;
+    static uint8_t bleBasicIdCounter  = 0;
+
+    // Location 3:1 weighting per droneRemoteIDSpoofer reference: slots
+    // 0,1,2 = Location, slot 3 = Basic ID, then repeat.
+    static uint8_t bleRotation = 0;
+    bool sendLocation = (bleRotation % 4) != 3;
+    bleRotation = (bleRotation + 1) % 4;
+
+    uint8_t msgCounter;
+    if (sendLocation) {
+        msgCounter = bleLocationCounter & 0x0F;
+        bleLocationCounter = (bleLocationCounter + 1) & 0x0F;
+    } else {
+        msgCounter = bleBasicIdCounter & 0x0F;
+        bleBasicIdCounter = (bleBasicIdCounter + 1) & 0x0F;
+    }
+    _bleAdvData[pos++] = (0x00 << 4) | msgCounter;  // app_code=0 | counter
 
     // Build the full 25-byte ODID message into a stack temp (the build
     // functions memset ODID_MSG_SIZE bytes and will overflow _bleAdvData
     // if given &_bleAdvData[pos] directly), then copy the first 23 bytes.
     uint8_t tempMsg[ODID_MSG_SIZE];
-    static bool sendBasicId = true;
-    if (sendBasicId) {
-        buildBasicIdMsg(tempMsg);
-    } else {
+    if (sendLocation) {
         buildLocationMsg(tempMsg);
+    } else {
+        buildBasicIdMsg(tempMsg);
     }
     memcpy(&_bleAdvData[pos], tempMsg, BLE4_ODID_MSG_SIZE);
     pos += BLE4_ODID_MSG_SIZE;
-    sendBasicId = !sendBasicId;
 
     esp_ble_gap_config_adv_data_raw(_bleAdvData, pos);
 

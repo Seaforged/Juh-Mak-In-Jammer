@@ -327,8 +327,8 @@ static void elrsBuildHopSequence(uint32_t seed) {
     }
 }
 
-void elrsStart() {
-    if (!_radio) return;
+bool elrsStart() {
+    if (!_radio) return false;
 
     const ElrsDomain&  dom  = *_elrsDomain;
     const ElrsAirRate& rate = *_elrsRate;
@@ -361,7 +361,7 @@ void elrsStart() {
     if (state != RADIOLIB_ERR_NONE) {
         Serial.printf("[ELRS] radio config FAILED (error %d)\n", state);
         _elrsRunning = false;
-        return;
+        return false;
     }
 
     // Real ELRS uses implicit header (no explicit header byte sequence) —
@@ -399,12 +399,13 @@ void elrsStart() {
     if (_elrsDomain == &ELRS_DOMAINS[ELRS_DOMAIN_EU868]) {
         Serial.println("  WARNING: EU868 ETSI duty cycle limits (1%) apply in real deployments");
     }
+    return true;
 }
 
 // Start in binding/beacon state — v2 §3.1.7
 // Transmits on sync channel at 1 Hz for 10 seconds, then transitions to FHSS
-void elrsStartBinding() {
-    if (!_radio) return;
+bool elrsStartBinding() {
+    if (!_radio) return false;
 
     const ElrsDomain&  dom  = *_elrsDomain;
     const ElrsAirRate& rate = *_elrsRate;
@@ -423,7 +424,7 @@ void elrsStartBinding() {
     if (state != RADIOLIB_ERR_NONE) {
         Serial.printf("[ELRS] radio config FAILED (error %d)\n", state);
         _elrsRunning = false;
-        return;
+        return false;
     }
 
     // Binding phase always sends the 8-byte beacon; implicit header length
@@ -444,6 +445,7 @@ void elrsStartBinding() {
 
     Serial.printf("[ELRS-%s] BINDING: TX on sync channel (%.1f MHz) 1 Hz...\n",
                   dom.name, syncFreq);
+    return true;
 }
 
 void elrsStop() {
@@ -530,8 +532,10 @@ void elrsUpdate() {
     }
 
     const uint8_t* payload = (_elrsRate->payloadLen <= 8) ? ELRS_PAYLOAD_8 : ELRS_PAYLOAD_10;
-    _radio->startTransmit(payload, _elrsRate->payloadLen);
-    _elrsPacketCount++;
+    int16_t txRc = _radio->startTransmit(payload, _elrsRate->payloadLen);
+    if (txRc == RADIOLIB_ERR_NONE) {
+        _elrsPacketCount++;
+    }
     _elrsPktsSinceHop++;
 }
 

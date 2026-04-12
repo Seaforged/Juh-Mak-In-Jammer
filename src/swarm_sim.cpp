@@ -305,7 +305,7 @@ void swarmUpdate() {
 
 void swarmCycleCount() {
     static const uint8_t presets[] = { 1, 4, 8, 16 };
-    static uint8_t idx = 1;  // start at 4
+    static uint8_t idx = 0;  // first press → presets[1]=4, second → 8, etc.
     idx = (idx + 1) % 4;
     uint8_t newCount = presets[idx];
 

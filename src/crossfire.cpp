@@ -4,15 +4,19 @@
 #include "protocol_params.h"
 
 // ============================================================
-// TBS Crossfire 915 MHz FSK Simulation
+// TBS Crossfire — dual-modulation (FSK 150 Hz + LoRa 50 Hz),
+// dual-band (915 US / 868 EU)
 // ============================================================
 
 static SX1262 *_radio = nullptr;
 
-// Crossfire parameters from protocol_params.h
-static const CrossfireBand& _crsfBand = CRSF_BANDS[CRSF_BAND_915];
+// Runtime-selectable band (default: 915 US)
+static uint8_t _bandIdx = CRSF_BAND_915;
 
-// FHSS hop sequence — sized for 915 band (100 channels)
+// Runtime-selectable modulation (default: FSK 150 Hz)
+static bool _loRaMode = false;
+
+// FHSS hop sequence — sized for 915 band (100 channels, the larger)
 static uint8_t _crsfHopSeq[100];
 static uint8_t _crsfHopIdx = 0;
 
@@ -29,7 +33,7 @@ static const uint8_t CRSF_PAYLOAD[] = {
 };
 
 static void crsfBuildHopSequence(uint32_t seed) {
-    uint8_t numCh = _crsfBand.channels;
+    uint8_t numCh = CRSF_BANDS[_bandIdx].channels;
     for (uint8_t i = 0; i < numCh; i++) {
         _crsfHopSeq[i] = i;
     }
@@ -44,7 +48,8 @@ static void crsfBuildHopSequence(uint32_t seed) {
 }
 
 static float crsfChanToFreq(uint8_t chan) {
-    return _crsfBand.freqStartMHz + (chan * _crsfBand.chanSpacingMHz);
+    return CRSF_BANDS[_bandIdx].freqStartMHz
+         + (chan * CRSF_BANDS[_bandIdx].chanSpacingMHz);
 }
 
 void crossfireInit(SX1262 *radio) {
@@ -52,8 +57,18 @@ void crossfireInit(SX1262 *radio) {
     _crsfRunning = false;
 }
 
+void crossfireSetBand(uint8_t bandIdx) {
+    if (bandIdx <= CRSF_BAND_868) {
+        _bandIdx = bandIdx;
+    }
+}
+
+// --- FSK 150 Hz mode (existing behavior) ---
 void crossfireStart() {
     if (!_radio) return;
+
+    _loRaMode = false;
+    const CrossfireBand& band = CRSF_BANDS[_bandIdx];
 
     crsfBuildHopSequence(0xBAADF00D);
     _crsfHopIdx = 0;
@@ -61,12 +76,9 @@ void crossfireStart() {
     _crsfHopCount = 0;
 
     int8_t pwr = rfGetPower();
-
-    // Full reset for clean state
     _radio->reset();
     delay(100);
 
-    // FSK mode from protocol_params.h — v2 §3.2.3
     int state = _radio->beginFSK(
         crsfChanToFreq(_crsfHopSeq[0]),
         CRSF_FSK_BITRATE_KBPS,     // 85.1 kbps — v2 §3.2.3
@@ -79,7 +91,7 @@ void crossfireStart() {
     );
 
     if (state != RADIOLIB_ERR_NONE) {
-        Serial.printf("CRSF FSK config FAILED (error %d)\n", state);
+        Serial.printf("[CRSF] FSK config FAILED (error %d)\n", state);
         _crsfRunning = false;
         return;
     }
@@ -88,14 +100,65 @@ void crossfireStart() {
     _crsfRunning = true;
     _crsfLastHopUs = micros();
 
-    // Transmit first packet
     _radio->transmit(CRSF_PAYLOAD, sizeof(CRSF_PAYLOAD));
     _crsfPacketCount++;
 
     Serial.printf("[CRSF-%s] %uch %.0f-%.0fMHz FSK %.1fkbps %uHz %d dBm\n",
-                  _crsfBand.name, _crsfBand.channels,
-                  _crsfBand.freqStartMHz, _crsfBand.freqStopMHz,
+                  band.name, band.channels,
+                  band.freqStartMHz, band.freqStopMHz,
                   CRSF_FSK_BITRATE_KBPS, CRSF_FSK_RATE_HZ, pwr);
+}
+
+// --- LoRa 50 Hz mode (new) ---
+void crossfireStartLoRa() {
+    if (!_radio) return;
+
+    _loRaMode = true;
+    const CrossfireBand& band = CRSF_BANDS[_bandIdx];
+
+    crsfBuildHopSequence(0xBAADF00D);
+    _crsfHopIdx = 0;
+    _crsfPacketCount = 0;
+    _crsfHopCount = 0;
+
+    int8_t pwr = rfGetPower();
+    _radio->reset();
+    delay(100);
+
+    // Crossfire LoRa 50 Hz — v2 §3.2.2. SF/BW/CR are proprietary; these are
+    // reasonable approximations. Crossfire is NOT ELRS — uses explicit header.
+    // [VERIFY] exact SF/BW/CR against an SDR capture of a real Crossfire TX.
+    int state = _radio->begin(
+        crsfChanToFreq(_crsfHopSeq[0]),
+        500.0f,                   // BW 500 kHz [VERIFY]
+        7,                        // SF7 [VERIFY]
+        7,                        // CR 4/7 [VERIFY]
+        RADIOLIB_SX126X_SYNC_WORD_PRIVATE,  // 0x12 placeholder [VERIFY]
+        pwr,
+        8,                        // preamble [VERIFY]
+        1.8, false
+    );
+
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[CRSF] LoRa config FAILED (error %d)\n", state);
+        _crsfRunning = false;
+        return;
+    }
+
+    // Crossfire uses explicit header — this is NOT ELRS.
+    _radio->explicitHeader();
+
+    _crsfCurrentMHz = crsfChanToFreq(_crsfHopSeq[0]);
+    _crsfRunning = true;
+    _crsfLastHopUs = micros();
+
+    _radio->transmit(CRSF_PAYLOAD, sizeof(CRSF_PAYLOAD));
+    _crsfPacketCount++;
+
+    Serial.printf("[CRSF-%s] %uch %.0f-%.0fMHz LoRa SF7/BW500 %uHz %d dBm [VERIFY SF/BW/CR]\n",
+                  band.name, band.channels,
+                  band.freqStartMHz, band.freqStopMHz,
+                  CRSF_LORA_RATE_HZ, pwr);
 }
 
 void crossfireStop() {
@@ -103,20 +166,24 @@ void crossfireStop() {
 
     _radio->standby();
     _crsfRunning = false;
-    Serial.printf("CRSF TX OFF: %lu packets, %lu hops\n",
+    Serial.printf("[CRSF] TX OFF: %lu packets, %lu hops (%s)\n",
                   (unsigned long)_crsfPacketCount,
-                  (unsigned long)_crsfHopCount);
+                  (unsigned long)_crsfHopCount,
+                  _loRaMode ? "LoRa 50Hz" : "FSK 150Hz");
 }
 
 void crossfireUpdate() {
     if (!_crsfRunning || !_radio) return;
 
+    uint32_t intervalUs = _loRaMode ? CRSF_LORA_PACKET_INTERVAL_US
+                                    : CRSF_FSK_PACKET_INTERVAL_US;
     unsigned long nowUs = micros();
-    if ((nowUs - _crsfLastHopUs) < CRSF_FSK_PACKET_INTERVAL_US) return;
+    if ((nowUs - _crsfLastHopUs) < intervalUs) return;
 
     _crsfLastHopUs = nowUs;
 
-    _crsfHopIdx = (_crsfHopIdx + 1) % _crsfBand.channels;
+    uint8_t numCh = CRSF_BANDS[_bandIdx].channels;
+    _crsfHopIdx = (_crsfHopIdx + 1) % numCh;
     _crsfHopCount++;
 
     float nextFreq = crsfChanToFreq(_crsfHopSeq[_crsfHopIdx]);
@@ -135,5 +202,7 @@ CrossfireParams crossfireGetParams() {
         _crsfHopCount,
         rfGetPower(),
         _crsfRunning,
+        _loRaMode,
+        CRSF_BANDS[_bandIdx].name,
     };
 }

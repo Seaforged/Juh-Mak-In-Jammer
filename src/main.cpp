@@ -53,7 +53,7 @@ static void printHelp() {
 
     Serial.println("DRONE PROTOCOLS:");
     Serial.println("  e  ELRS FHSS      e1-e6=rate  f/a/u/i=domain  b=binding");
-    Serial.println("  g  Crossfire FSK  150Hz GFSK 85.1kbps FHSS");
+    Serial.println("  g  Crossfire      g/g9=915 g8=868 gl=LoRa50Hz");
     Serial.println("  k  SiK Radio      k1=64k  k2=125k  k3=250k");
     Serial.println("  l  mLRS           l1=19Hz  l2=31Hz  l3=50Hz(FSK)");
     Serial.println("  u  Custom LoRa    u?=settings  uf/us/ub/ur/uh/up/uw=config");
@@ -240,12 +240,13 @@ static void handleSerialCommands() {
         stopCurrentMode();
         elrsSetRate(rateIdx);
         elrsSetDomain(domIdx);
+        bool ok;
         if (binding) {
-            elrsStartBinding();
+            ok = elrsStartBinding();
         } else {
-            elrsStart();
+            ok = elrsStart();
         }
-        menuSetState(STATE_ELRS_ACTIVE);
+        if (ok) menuSetState(STATE_ELRS_ACTIVE);
         break;
     }
 
@@ -283,11 +284,36 @@ static void handleSerialCommands() {
         break;
     }
 
-    case 'g':   // Crossfire FSK
+    case 'g': { // Crossfire — g/g9=915 FSK, g8=868 FSK, gl/gl9=915 LoRa, gl8=868 LoRa
+        delay(80);
+        bool loraMode = false;
+        uint8_t bandIdx = CRSF_BAND_915;  // default
+
+        // Check for 'l' (LoRa flag)
+        if (Serial.available() && Serial.peek() == 'l') {
+            Serial.read();
+            loraMode = true;
+        }
+        delay(20);
+        // Check for band digit
+        if (Serial.available()) {
+            char c = Serial.peek();
+            if (c == '8')      { Serial.read(); bandIdx = CRSF_BAND_868; }
+            else if (c == '9') { Serial.read(); bandIdx = CRSF_BAND_915; }
+        }
+
         stopCurrentMode();
-        crossfireStart();
-        menuSetState(STATE_CROSSFIRE_ACTIVE);
+        crossfireSetBand(bandIdx);
+        if (loraMode) {
+            crossfireStartLoRa();
+        } else {
+            crossfireStart();
+        }
+        // Crossfire start functions set _crsfRunning internally; gate state
+        // on that flag via crossfireGetParams().running check.
+        if (crossfireGetParams().running) menuSetState(STATE_CROSSFIRE_ACTIVE);
         break;
+    }
 
     case 'i':   // LoRaWAN US915 standalone false positive
         stopCurrentMode();
