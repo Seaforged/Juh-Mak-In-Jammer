@@ -25,9 +25,40 @@ static uint32_t s_timeoutMs = 500;
 void xr1SetTimeoutMs(uint32_t ms) { s_timeoutMs = ms; }
 
 void xr1Init() {
+    // Larger RX buffer so the XR1's ~350-byte boot banner doesn't overflow
+    // the default 256-byte HardwareSerial ring and drop "XR1 READY" before
+    // we get a chance to see it. Must be called before begin().
+    Serial1.setRxBufferSize(1024);
     Serial1.begin(XR1_BAUD, SERIAL_8N1, PIN_S3_RX_FROM_XR1_TX, PIN_S3_TX_TO_XR1_RX);
-    // Drain any boot noise the XR1 might have emitted since it came up — we
-    // want a clean slate before the first PING.
+
+    // The XR1 emits ~1 s worth of self-test text on UART before its UART
+    // parser is installed. Wait for the "XR1 READY" sentinel (or fall
+    // through on timeout) and echo everything we read to USB Serial so the
+    // operator can see the XR1's boot log mirrored through the T3S3.
+    Serial.println("[XR1-BOOT] listening for XR1 banner...");
+    const uint32_t deadline = millis() + 3500;
+    String line;
+    bool sawReady = false;
+    size_t totalRx = 0;
+    while (millis() < deadline && !sawReady) {
+        while (Serial1.available() > 0) {
+            const int ci = Serial1.read();
+            if (ci < 0) break;
+            ++totalRx;
+            const char c = (char)ci;
+            if (c == '\r') continue;
+            if (c == '\n') {
+                if (line.length() > 0) Serial.printf("[XR1-BOOT] %s\n", line.c_str());
+                if (line.indexOf("XR1 READY") >= 0) { sawReady = true; break; }
+                line = "";
+            } else if (line.length() < 128) {
+                line += c;
+            }
+        }
+        if (!sawReady) delay(5);
+    }
+    Serial.printf("[XR1-BOOT] end — sawReady=%d totalRxBytes=%u\n",
+                  (int)sawReady, (unsigned)totalRx);
     delay(50);
     while (Serial1.available() > 0) { (void)Serial1.read(); }
 }
@@ -53,25 +84,48 @@ static int readResponse(char *buf, size_t bufSize) {
     return -1;
 }
 
-// Send a pre-formatted command line + '\n', read one response line.
-// Returns true iff the response begins with "OK". Logs any error to USB.
+// Is this line a protocol response (OK / ERR / DONE) rather than an async
+// debug message from the XR1 (e.g., "[XR1] ..." or a banner line)?
+static bool isResponseLine(const char *line) {
+    return (strncmp(line, "OK", 2) == 0)
+        || (strncmp(line, "ERR", 3) == 0)
+        || (strncmp(line, "DONE", 4) == 0);
+}
+
+// Send a pre-formatted command line + '\n', then read lines until either a
+// real response arrives or the timeout window closes. Any intermediate lines
+// that look like async debug output are silently dropped — otherwise, boot
+// banners and future asynchronous DONE messages would be mistaken for
+// responses. Returns true iff we saw an OK line.
 static bool sendCmdExpectOk(const char *cmd, char *respOut = nullptr, size_t respOutSize = 0) {
+    // Drain anything that might have accumulated since the last command.
+    while (Serial1.available() > 0) { (void)Serial1.read(); }
+
     Serial1.print(cmd);
     Serial1.print('\n');
 
+    const uint32_t deadline = millis() + s_timeoutMs;
     char resp[RESP_BUF_SZ];
-    const int n = readResponse(resp, sizeof(resp));
-    if (n < 0) {
-        Serial.printf("[XR1-ERR] timeout on '%s'\n", cmd);
+    while (millis() < deadline) {
+        // Compute remaining time so readResponse can honor the overall deadline.
+        const uint32_t remaining = deadline - millis();
+        const uint32_t savedTo = s_timeoutMs;
+        s_timeoutMs = remaining;
+        const int n = readResponse(resp, sizeof(resp));
+        s_timeoutMs = savedTo;
+
+        if (n < 0) break;         // hit deadline with no newline — treat as timeout
+        if (!isResponseLine(resp)) continue;   // async debug; keep waiting
+
+        if (respOut && respOutSize > 0) {
+            strncpy(respOut, resp, respOutSize - 1);
+            respOut[respOutSize - 1] = '\0';
+        }
+        if (strncmp(resp, "OK", 2) == 0) return true;
+        Serial.printf("[XR1-ERR] cmd '%s' -> '%s'\n", cmd, resp);
         return false;
     }
-    if (respOut && respOutSize > 0) {
-        strncpy(respOut, resp, respOutSize - 1);
-        respOut[respOutSize - 1] = '\0';
-    }
-    if (strncmp(resp, "OK", 2) == 0) return true;
-
-    Serial.printf("[XR1-ERR] cmd '%s' -> '%s'\n", cmd, resp);
+    Serial.printf("[XR1-ERR] timeout on '%s'\n", cmd);
     return false;
 }
 

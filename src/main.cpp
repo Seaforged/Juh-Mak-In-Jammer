@@ -138,6 +138,18 @@ void setup() {
     xr1Init();
     Serial.println(xr1Ping() ? "[XR1] Connected" : "[XR1] No response — check wiring");
 
+    // Diagnostic: dump XR1 self-reported state. "OK <freq> <mod> <pwr> <state>"
+    // tells us whether LR1121 init + self-test succeeded (healthy) or whether
+    // the red-blinking LED is hiding a failed radio init.
+    {
+        char statusBuf[128];
+        if (xr1GetStatus(statusBuf, sizeof(statusBuf))) {
+            Serial.printf("[XR1-STATUS] %s\n", statusBuf);
+        } else {
+            Serial.println("[XR1-STATUS] query failed");
+        }
+    }
+
     // Hold boot screen for 2 seconds so user can read it
     delay(2000);
 

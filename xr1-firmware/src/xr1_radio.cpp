@@ -24,15 +24,15 @@ static Xr1LedMode s_ledMode = XR1_LED_AUTO;
 static uint32_t s_lastTxSubMs = 0;   // millis() of last sub-GHz TX
 static uint32_t s_lastTxHfMs  = 0;   // millis() of last 2.4 GHz TX
 
-// GRB byte order per hardware.json led_rgb_isgrb=true — argument names in
-// neopixelWrite() are (r,g,b) but on the XR1's WS2812B-compatible LED we must
-// pass green first, then red, then blue.
+// Arduino-ESP32's neopixelWrite(pin, r, g, b) takes RGB parameters but
+// already outputs GRB bytes on the wire internally — standard WS2812 protocol.
+// The hardware.json led_rgb_isgrb=true flag confirms the XR1's LED is
+// standard-wired, so we pass RGB straight through. No swap here: an earlier
+// swap was present and was painting dim red where dim green was intended,
+// causing the idle pulse to look like a red error blink. See the LED_RGB_IS_GRB
+// comment in xr1_config.h for the ELRS-convention context.
 static inline void writeLed(uint8_t r, uint8_t g, uint8_t b) {
-#if LED_RGB_IS_GRB
-    neopixelWrite(LED_RGB, g, r, b);
-#else
     neopixelWrite(LED_RGB, r, g, b);
-#endif
 }
 
 // ----- helpers --------------------------------------------------------------
