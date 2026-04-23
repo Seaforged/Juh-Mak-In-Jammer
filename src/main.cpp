@@ -19,6 +19,7 @@
 #include "infra_sim.h"
 #include "protocol_params.h"
 #include "splash.h"
+#include "xr1_driver.h"
 
 // --- OLED Display ---
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
@@ -129,6 +130,13 @@ void setup() {
     customLoraInit(&radio);
     infraInit(&radio);
     menuInit(&display);
+
+    // --- XR1 UART link (Phase 3) ---
+    // The XR1 runs its own firmware and sends "XR1 READY" over UART after
+    // boot. We ping it here so the operator sees whether the secondary
+    // emitter is reachable before the menu takes over.
+    xr1Init();
+    Serial.println(xr1Ping() ? "[XR1] Connected" : "[XR1] No response — check wiring");
 
     // Hold boot screen for 2 seconds so user can read it
     delay(2000);

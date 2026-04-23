@@ -15,6 +15,7 @@
 #include "version.h"
 #include "xr1_pins.h"
 #include "xr1_radio.h"
+#include "xr1_uart.h"
 
 static void printBanner() {
     Serial.println();
@@ -55,10 +56,14 @@ void setup() {
         return;
     }
 
+    xr1UartInit();
     Serial.println("XR1 READY");
 }
 
 void loop() {
-    xr1RadioLedHeartbeat();
-    delay(20);
+    xr1UartUpdate();
+    xr1LedUpdate();
+    // 20 Hz LED refresh is plenty smooth for the blink patterns we render and
+    // doesn't starve the UART parser — xr1UartUpdate is itself non-blocking.
+    delay(50);
 }

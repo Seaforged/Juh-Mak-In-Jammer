@@ -1,0 +1,27 @@
+#pragma once
+
+// ============================================================================
+// XR1 UART command parser — ASCII line protocol on Serial (UART0, GPIO 20/21)
+// that the T3S3 master drives. Commands are newline-terminated; responses are
+// single-line (OK, DONE, or ERR <code>), newline-terminated.
+//
+// Command set (see docs/3.md for the authoritative protocol):
+//   PING                          -> OK
+//   FREQ <MHz>                    -> OK | ERR <code>
+//   LORA <SF> <BW_kHz> <CR>       -> OK | ERR <code>
+//   FSK  <BR_kbps> <DEV_kHz>      -> OK | ERR <code>
+//   PWR  <dBm>                    -> OK | ERR <code>
+//   TX   <hex_payload>            -> OK | ERR <code>
+//   TXRPT <interval_ms> <count>   -> OK  (then DONE when complete)
+//   HOP   <ch1,ch2,...> <dwell>   -> OK  (runs until STOP)
+//   STOP                          -> OK
+//   STATUS                        -> OK <freq> <mod> <pwr> <state>
+//   RESET                         -> OK  (then radio re-inits)
+//   LED   <0|1|2|3|4>             -> OK
+// ============================================================================
+
+void xr1UartInit();
+
+// Called from loop() every iteration. Non-blocking: reads any available bytes,
+// runs line dispatch on newline, and advances the TXRPT / HOP state machines.
+void xr1UartUpdate();
