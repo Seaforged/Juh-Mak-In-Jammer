@@ -52,10 +52,6 @@ bool xr1RadioBegin() {
     pulseReset();
     waitBusyLow(200);
 
-    // Install the RF switch table BEFORE begin() so the first TX/RX the chip
-    // attempts during initialization is routed to the correct antenna path.
-    s_radio.setRfSwitchTable(XR1_RFSW_DIO_PINS, XR1_RFSW_TABLE);
-
     // begin() signature (RadioLib 7.x LR1121 via LR1120 base):
     //   freq, bw, sf, cr, syncWord, power, preambleLength, tcxoVoltage
     // TCXO is passed here on purpose — the default (1.6 V) is silently wrong
@@ -92,6 +88,11 @@ bool xr1RadioBegin() {
     // split regulator choice out of begin().
     s_radio.setRegulatorDCDC();
 
+    // Apply the exact XR1 DIO switch map after begin(). LR11x0 begin() performs
+    // its own low-level module setup, so installing the RF switch table here
+    // ensures the final SetDioAsRfSwitch payload matches hardware.json.
+    s_radio.setRfSwitchTable(XR1_RFSW_DIO_PINS, XR1_RFSW_TABLE);
+
     // Read chip + firmware version for the status line. LR1121 returns four
     // bytes: [HW, TYPE, FW_MAJOR, FW_MINOR]. RadioLib exposes this through
     // getVersionInfo(); if that isn't available in the installed version we
@@ -116,7 +117,25 @@ static bool txTestOnBand(float freqMhz, float bwKhz, const char *label) {
         s_status.lastError = rc;
         return false;
     }
-    rc = s_radio.setBandwidth(bwKhz);
+
+    // Re-apply the PA configuration after each band switch. LR1120 tracks
+    // whether the current frequency is sub-GHz or 2.4 GHz and uses that to
+    // choose the correct PA path when setOutputPower() runs.
+    const int8_t powerDbm = (freqMhz > 1000.0f)
+        ? XR1_POWER_2G4_DBM[0]
+        : XR1_POWER_SUBGHZ_DBM[0];
+    rc = s_radio.setOutputPower(powerDbm);
+    if (rc != RADIOLIB_ERR_NONE) {
+        Serial.printf("[XR1] %s setOutputPower(%d) => %d\n", label, powerDbm, rc);
+        s_status.lastError = rc;
+        return false;
+    }
+
+    // LR11x0::setBandwidth(bw, high) validates against two disjoint sets:
+    //   high=false -> {62.5, 125, 250, 500} kHz   (sub-GHz modem)
+    //   high=true  -> {203.125, 406.25, 812.5} kHz (2.4 GHz HF modem)
+    // The high flag does not auto-derive from frequency, so we select it here.
+    rc = s_radio.setBandwidth(bwKhz, freqMhz > 1000.0f);
     if (rc != RADIOLIB_ERR_NONE) {
         Serial.printf("[XR1] %s setBandwidth(%.1f) => %d\n", label, bwKhz, rc);
         s_status.lastError = rc;
@@ -142,9 +161,10 @@ bool xr1RadioHelloSelfTest() {
     // Sub-GHz: 915 MHz, BW 125 kHz (default ELRS FCC915-ish)
     s_status.subGhzOk = txTestOnBand(915.0f, 125.0f, "SUB-GHZ");
 
-    // 2.4 GHz: 2440 MHz with a wider bandwidth — LR1121 2.4 GHz LoRa uses
-    // BW500/BW800 modes per Semtech's user manual; 812.5 kHz is the wide
-    // ISM-band preset RadioLib exposes.
+    // 2.4 GHz: 2440 MHz with LR1121 HF-band LoRa bandwidth. RadioLib 7.6.0
+    // LR11x0::setBandwidth(bw, high=true) accepts exactly 203.125, 406.25, or
+    // 812.5 kHz for the HF modem — 800.0 is NOT in that set despite being the
+    // round-number equivalent. Sprint 2.2's -8 came from calling with high=false.
     s_status.twoGhzOk = txTestOnBand(2440.0f, 812.5f, "2.4GHZ ");
 
     return s_status.subGhzOk && s_status.twoGhzOk;

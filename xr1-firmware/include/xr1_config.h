@@ -22,13 +22,10 @@
 //   gnss      = 0b00000
 //   wifi      = 0b00101  -> DIO5 + DIO7 HIGH
 //
-// RadioLib's Module::OpMode_t covers IDLE/RX/TX only. The HF/HP/WIFI/GNSS
-// states above are NOT expressible in a single RfSwitchMode_t table in
-// RadioLib 7.x — they would need either LR11x0 extended modes (added in a
-// later point release) or a manual DIO override around each 2.4 GHz TX.
-// We keep the three base modes here so getVersion() + 915 MHz TX self-test
-// work for "Hello Hardware"; 2.4 GHz TX is likely to produce no on-air
-// signal until tx_hf is wired in during Sprint 2.3. See NOTE below.
+// RadioLib 7.6.0 exposes LR11x0-specific RF switch modes for the extra
+// tx_hp/tx_hf/gnss/wifi states above. For LR11x0 devices these table rows are
+// encoded directly into the chip's SetDioAsRfSwitch command, so we can mirror
+// hardware.json exactly instead of bit-banging DIO lines around each transmit.
 // ============================================================================
 static const uint32_t XR1_RFSW_DIO_PINS[] = {
     RADIOLIB_LR11X0_DIO5,
@@ -39,20 +36,16 @@ static const uint32_t XR1_RFSW_DIO_PINS[] = {
 };
 
 static const Module::RfSwitchMode_t XR1_RFSW_TABLE[] = {
-    // mode                DIO5  DIO6  DIO7  DIO8
-    { Module::MODE_IDLE, { LOW,  LOW,  LOW,  LOW  } },  // standby = 0
-    { Module::MODE_RX,   { LOW,  LOW,  HIGH, HIGH } },  // rx      = 12
-    { Module::MODE_TX,   { LOW,  LOW,  LOW,  HIGH } },  // tx      = 8  (sub-GHz path)
+    // mode                 DIO5  DIO6  DIO7  DIO8
+    { LR11x0::MODE_STBY,  { LOW,  LOW,  LOW,  LOW  } },  // standby = 0
+    { LR11x0::MODE_RX,    { LOW,  LOW,  HIGH, HIGH } },  // rx      = 12
+    { LR11x0::MODE_TX,    { LOW,  LOW,  LOW,  HIGH } },  // tx      = 8  (sub-GHz LP)
+    { LR11x0::MODE_TX_HP, { LOW,  LOW,  LOW,  HIGH } },  // tx_hp   = 8  (sub-GHz HP)
+    { LR11x0::MODE_TX_HF, { LOW,  HIGH, HIGH, LOW  } },  // tx_hf   = 6  (2.4 GHz)
+    { LR11x0::MODE_GNSS,  { LOW,  LOW,  LOW,  LOW  } },  // gnss    = 0
+    { LR11x0::MODE_WIFI,  { HIGH, LOW,  HIGH, LOW  } },  // wifi    = 5
     END_OF_MODE_TABLE,
 };
-
-// NOTE: tx_hf = 0b0110 (DIO6+DIO7 HIGH) is the 2.4 GHz PA path. When the
-// Sprint 2.2 self-test reaches the 2440 MHz leg, override the switch lines
-// manually around the transmit call:
-//     digitalWrite(DIO8, LOW); digitalWrite(DIO6, HIGH); digitalWrite(DIO7, HIGH);
-//     radio.transmit(...);
-//     // then restore or let setRfSwitchTable reassert on the next mode change
-// Or (preferred) upgrade to a RadioLib build that exposes MODE_TX_HF for LR11x0.
 
 // ============================================================================
 // Power level tables — register values from hardware.json, not raw dBm.

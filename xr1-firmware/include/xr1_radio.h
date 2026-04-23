@@ -19,8 +19,8 @@ struct Xr1RadioStatus {
     bool     twoGhzOk;       // 2440 MHz test TX succeeded
 };
 
-// Bring up SPI, reset LR1121, install RF switch table, call begin() with
-// 3.0 V TCXO, 915 MHz / BW125 / SF7 / CR4-5. Returns true on success.
+// Bring up SPI, reset LR1121, call begin() with the 3.0 V TCXO assumption,
+// then apply the hardware.json RF switch table. Returns true on success.
 bool xr1RadioBegin();
 
 // Transmit a small LoRa packet on 915.0 MHz, then switch to 2440.0 MHz and
