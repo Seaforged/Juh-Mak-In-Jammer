@@ -12,6 +12,7 @@
 #include "mlrs_sim.h"
 #include "custom_lora.h"
 #include "infra_sim.h"
+#include "xr1_modes.h"
 
 // ============================================================
 // Menu state machine + button debouncer
@@ -855,6 +856,43 @@ void menuUpdate() {
                 _oled->display();
 
                 lastInfraRefresh = millis();
+                _needsRedraw = false;
+            }
+        }
+        break;
+
+    // --- XR1 2.4 GHz Active (Phase 4) ---
+    case STATE_XR1_ACTIVE:
+        if (btn == BTN_LONG) {
+            xr1ModesStop();
+            _state = STATE_MAIN_MENU;
+            _needsRedraw = true;
+        }
+        {
+            static unsigned long lastXr1Refresh = 0;
+            if (_needsRedraw || (millis() - lastXr1Refresh > 500)) {
+                _oled->clearDisplay();
+                _oled->setTextSize(1);
+                _oled->setTextColor(SSD1306_WHITE);
+
+                Xr1ModesStatus xs = xr1ModesGetStatus();
+                _oled->setCursor(0, 0);
+                _oled->print("XR1 2.4GHz - TX");
+                _oled->drawFastHLine(0, 10, OLED_WIDTH, SSD1306_WHITE);
+
+                _oled->setCursor(0, 14);
+                _oled->printf("%s", xs.label);
+                _oled->setCursor(0, 24);
+                _oled->printf("%.1f-%.1f MHz", xs.startMhz, xs.stopMhz);
+                _oled->setCursor(0, 34);
+                _oled->printf("%uch dwell %ums", xs.channels, xs.dwellMs);
+                _oled->setCursor(0, 44);
+                _oled->printf("%s  %d dBm", xs.modulation, xs.powerDbm);
+                _oled->setCursor(0, 56);
+                _oled->print("LONG=stop");
+                _oled->display();
+
+                lastXr1Refresh = millis();
                 _needsRedraw = false;
             }
         }

@@ -27,6 +27,7 @@ enum AppState {
     STATE_MLRS_ACTIVE,
     STATE_CUSTOM_LORA_ACTIVE,
     STATE_INFRA_ACTIVE,
+    STATE_XR1_ACTIVE,        // Phase 4: XR1 LR1121 running a 2.4 GHz protocol
 };
 
 // Main menu item indices

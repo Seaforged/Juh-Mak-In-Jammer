@@ -12,9 +12,12 @@
 // Names deliberately avoid LINE_MAX / PATH_MAX / ARG_MAX etc. — POSIX headers
 // pulled in via Arduino.h define those as macros and shadow any C++ constant
 // that shares the spelling.
-static constexpr size_t XR1_LINE_BUF   = 256;
+// Bumped from 256 to 1024 for Phase 4 — the 80-channel ELRS 2.4 GHz HOP
+// command line is ~725 bytes ("HOP " + 80 × "2440.400," + " <dwell>").
+static constexpr size_t XR1_LINE_BUF   = 1024;
 static constexpr size_t XR1_PAYLOAD_MAX = 64;    // bytes after hex decode
-static constexpr size_t XR1_HOP_MAX_CH  = 32;
+// Bumped from 32 to 80 for Phase 4 — full ELRS 2.4 GHz channel count.
+static constexpr size_t XR1_HOP_MAX_CH  = 80;
 
 // ----- line buffer ----------------------------------------------------------
 static char    s_line[XR1_LINE_BUF];

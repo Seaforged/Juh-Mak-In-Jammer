@@ -20,6 +20,7 @@
 #include "protocol_params.h"
 #include "splash.h"
 #include "xr1_driver.h"
+#include "xr1_modes.h"
 
 // --- OLED Display ---
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
@@ -58,6 +59,13 @@ static void printHelp() {
     Serial.println("  k  SiK Radio      k1=64k  k2=125k  k3=250k");
     Serial.println("  l  mLRS           l1=19Hz  l2=31Hz  l3=50Hz(FSK)");
     Serial.println("  u  Custom LoRa    u?=settings  uf/us/ub/ur/uh/up/uw=config");
+    Serial.println("  x1-x4 ELRS 2.4G   500/250/150/50Hz via XR1");
+    Serial.println("  x5 Ghost 2.4G     approximate (proprietary)");
+    Serial.println("  x6 FrSky D16 2.4G GFSK 250k/50k footprint");
+    Serial.println("  x7 FlySky 2A 2.4G GFSK 250k/50k [APPROX]");
+    Serial.println("  x8 DJI Energy 2.4G GFSK bursts [APPROX, not OcuSync]");
+    Serial.println("  x9 Generic 2.4G   args: L|F <params...>");
+    Serial.println("  xq Stop XR1       (leaves sub-GHz running)");
 
     Serial.println("\nINFRASTRUCTURE (False Positive Testing):");
     Serial.println("  i  LoRaWAN US915  Single node, 8 SB2 channels, 30-60s");
@@ -176,6 +184,7 @@ static void stopCurrentMode() {
     if (st == STATE_MLRS_ACTIVE)     mlrsStop();
     if (st == STATE_CUSTOM_LORA_ACTIVE) customLoraStop();
     if (st == STATE_INFRA_ACTIVE)    infraStop();
+    if (st == STATE_XR1_ACTIVE)      xr1ModesStop();
 }
 
 // --- Serial command parser ---
@@ -422,12 +431,97 @@ static void handleSerialCommands() {
         Serial.printf("[MODE] Mixed FP (LoRaWAN+ELRS): %d dBm\n", rfGetPower());
         break;
 
-    case 'x':   // Combined (RID + ELRS dual-core)
-        stopCurrentMode();
-        combinedStart();
-        menuSetState(STATE_COMBINED_ACTIVE);
-        Serial.println("[MODE] Combined: RID(Core0) + ELRS(Core1)");
+    case 'x': {
+        // Peek a follow-on char to decide:
+        //   'x' alone          -> Combined RID + ELRS (legacy behavior)
+        //   'x1'..'x4'         -> ELRS 2.4 GHz rate 500/250/150/50 Hz
+        //   'x5'..'x8'         -> Ghost / FrSky / FlySky / DJI-energy
+        //   'x9'               -> Generic 2.4 GHz (single-line args)
+        //   'xq'               -> Stop XR1 only
+        delay(80);
+        if (!Serial.available()) {
+            stopCurrentMode();
+            combinedStart();
+            menuSetState(STATE_COMBINED_ACTIVE);
+            Serial.println("[MODE] Combined: RID(Core0) + ELRS(Core1)");
+            break;
+        }
+        char sub = Serial.read();
+
+        if (sub >= '1' && sub <= '4') {
+            stopCurrentMode();
+            if (xr1ModeElrs2g4Start(sub - '1')) {
+                menuSetState(STATE_XR1_ACTIVE);
+            } else {
+                Serial.println("[XR1-MODE] start failed");
+            }
+        } else if (sub == '5') {
+            stopCurrentMode();
+            if (xr1ModeGhostStart())        menuSetState(STATE_XR1_ACTIVE);
+        } else if (sub == '6') {
+            stopCurrentMode();
+            if (xr1ModeFrskyStart())        menuSetState(STATE_XR1_ACTIVE);
+        } else if (sub == '7') {
+            stopCurrentMode();
+            if (xr1ModeFlyskyStart())       menuSetState(STATE_XR1_ACTIVE);
+        } else if (sub == '8') {
+            stopCurrentMode();
+            if (xr1ModeDjiEnergyStart())    menuSetState(STATE_XR1_ACTIVE);
+        } else if (sub == '9') {
+            // x9 <L|F> <sf_or_br> <bw_or_dev> <cr> <count> <startMHz> <spacingMHz> <dwellMs> <pwrDbm>
+            // Read the rest of the line (timeout 200 ms between chars).
+            char argbuf[96];
+            size_t n = 0;
+            uint32_t deadline = millis() + 300;
+            while (millis() < deadline && n + 1 < sizeof(argbuf)) {
+                if (Serial.available()) {
+                    char c = Serial.read();
+                    if (c == '\n' || c == '\r') break;
+                    argbuf[n++] = c;
+                    deadline = millis() + 200;
+                }
+            }
+            argbuf[n] = '\0';
+
+            Xr1GenericCfg cfg = {};
+            char modLetter = 0;
+            unsigned sfInt = 0, crInt = 0, chInt = 0, dwInt = 0;
+            int pwrInt = 0;
+            float bwF = 0.0f, brF = 0.0f, devF = 0.0f, startMhz = 0.0f, spacing = 0.0f;
+            int parsed = sscanf(argbuf, " %c %u %f %u %u %f %f %u %d",
+                                &modLetter, &sfInt, &bwF, &crInt, &chInt,
+                                &startMhz, &spacing, &dwInt, &pwrInt);
+            if (parsed >= 9 && (modLetter == 'L' || modLetter == 'l')) {
+                cfg.isLora = true;
+                cfg.sf = (uint8_t)sfInt; cfg.bwKhz = bwF; cfg.cr = (uint8_t)crInt;
+                cfg.channelCount = (uint8_t)chInt; cfg.startMhz = startMhz;
+                cfg.spacingMhz = spacing; cfg.dwellMs = (uint16_t)dwInt;
+                cfg.powerDbm = (int8_t)pwrInt;
+                stopCurrentMode();
+                if (xr1ModeGenericStart(cfg)) menuSetState(STATE_XR1_ACTIVE);
+            } else if (parsed >= 9 && (modLetter == 'F' || modLetter == 'f')) {
+                // GFSK form: %c %brkbps %devkhz (cr) %count %start %spacing %dwell %pwr
+                cfg.isLora = false;
+                cfg.brKbps = (float)sfInt;  // first numeric after F is bitrate kbps
+                cfg.devKhz = bwF;           // second is deviation kHz
+                cfg.channelCount = (uint8_t)chInt;
+                cfg.startMhz = startMhz; cfg.spacingMhz = spacing;
+                cfg.dwellMs = (uint16_t)dwInt; cfg.powerDbm = (int8_t)pwrInt;
+                stopCurrentMode();
+                if (xr1ModeGenericStart(cfg)) menuSetState(STATE_XR1_ACTIVE);
+            } else {
+                Serial.println("[XR1-MODE] x9 usage: x9 L <sf> <bw> <cr> <count> <startMHz> <spacingMHz> <dwellMs> <pwr>");
+                Serial.println("                or: x9 F <brKbps> <devKhz> 0 <count> <startMHz> <spacingMHz> <dwellMs> <pwr>");
+            }
+        } else if (sub == 'q' || sub == 'Q') {
+            xr1ModesStop();
+            if (menuGetState() == STATE_XR1_ACTIVE) menuSetState(STATE_MAIN_MENU);
+            Serial.println("[XR1-MODE] stopped (xq)");
+        } else {
+            Serial.printf("Unknown x-subcommand: '%c'. Type 'h' for help.\n", sub);
+        }
         break;
+    }
 
     case 'w':   // Drone Swarm Simulator
         stopCurrentMode();
@@ -474,7 +568,8 @@ void loop() {
                      || st == STATE_SIK_ACTIVE
                      || st == STATE_MLRS_ACTIVE
                      || st == STATE_CUSTOM_LORA_ACTIVE
-                     || st == STATE_INFRA_ACTIVE);
+                     || st == STATE_INFRA_ACTIVE
+                     || st == STATE_XR1_ACTIVE);
     unsigned long blinkRate = txActive ? 200 : 1000;
 
     if (millis() - lastBlink >= blinkRate) {

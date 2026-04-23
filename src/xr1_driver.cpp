@@ -174,12 +174,13 @@ bool xr1Transmit(const uint8_t *data, uint8_t len) {
 }
 
 bool xr1StartHop(const float *channels, uint8_t count, uint16_t dwellMs) {
-    if (count == 0 || count > 32) {
+    if (count == 0 || count > 80) {
         Serial.println("[XR1-ERR] xr1StartHop: invalid channel count");
         return false;
     }
-    // "HOP " + (≤ 32 × ~9 chars) + " " + dwell
-    char cmd[384];
+    // "HOP " + (≤ 80 × ~9 chars) + " " + dwell. Phase 4 bumped from 32 to 80
+    // to carry the full ELRS 2.4 GHz channel set in one command.
+    char cmd[960];
     size_t pos = 0;
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, "HOP ");
     for (uint8_t i = 0; i < count; ++i) {
