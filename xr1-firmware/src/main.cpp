@@ -16,6 +16,7 @@
 #include "xr1_pins.h"
 #include "xr1_radio.h"
 #include "xr1_uart.h"
+#include "remote_id.h"
 
 static void printBanner() {
     Serial.println();
@@ -57,11 +58,13 @@ void setup() {
     }
 
     xr1UartInit();
+    remoteIdInit();     // NVS + esp_netif — stacks spin up lazily on first RID start
     Serial.println("XR1 READY");
 }
 
 void loop() {
     xr1UartUpdate();
+    remoteIdUpdate();
     xr1LedUpdate();
     // 20 Hz LED refresh is plenty smooth for the blink patterns we render and
     // doesn't starve the UART parser — xr1UartUpdate is itself non-blocking.

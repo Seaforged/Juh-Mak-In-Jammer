@@ -28,6 +28,7 @@ enum AppState {
     STATE_CUSTOM_LORA_ACTIVE,
     STATE_INFRA_ACTIVE,
     STATE_XR1_ACTIVE,        // Phase 4: XR1 LR1121 running a 2.4 GHz protocol
+    STATE_XR1_RID_ACTIVE,    // Phase 5: XR1 ESP32C3 emitting Remote ID (WiFi/BLE/DJI)
 };
 
 // Main menu item indices

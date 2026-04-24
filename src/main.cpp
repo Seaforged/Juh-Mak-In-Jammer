@@ -21,6 +21,7 @@
 #include "splash.h"
 #include "xr1_driver.h"
 #include "xr1_modes.h"
+#include "xr1_rid_modes.h"
 
 // --- OLED Display ---
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
@@ -66,6 +67,10 @@ static void printHelp() {
     Serial.println("  x8 DJI Energy 2.4G GFSK bursts [APPROX, not OcuSync]");
     Serial.println("  x9 Generic 2.4G   args: L|F <params...>");
     Serial.println("  xq Stop XR1       (leaves sub-GHz running)");
+    Serial.println("  y  XR1 RID (all)  WiFi+BLE+DJI defaults");
+    Serial.println("  y1 XR1 WiFi ODID  y2 BLE ODID  y3 DJI DroneID");
+    Serial.println("  y4 XR1 WiFi NaN   (stub on ESP32C3)");
+    Serial.println("  ya All 4 RID      yq Stop XR1 RID");
 
     Serial.println("\nINFRASTRUCTURE (False Positive Testing):");
     Serial.println("  i  LoRaWAN US915  Single node, 8 SB2 channels, 30-60s");
@@ -185,6 +190,7 @@ static void stopCurrentMode() {
     if (st == STATE_CUSTOM_LORA_ACTIVE) customLoraStop();
     if (st == STATE_INFRA_ACTIVE)    infraStop();
     if (st == STATE_XR1_ACTIVE)      xr1ModesStop();
+    if (st == STATE_XR1_RID_ACTIVE)  xr1RidStop();
 }
 
 // --- Serial command parser ---
@@ -535,6 +541,49 @@ static void handleSerialCommands() {
         swarmCycleCount();
         break;
 
+    case 'y': {
+        // XR1 Remote ID command family (Phase 5). Sub-char selects transport:
+        //   'y' alone / 'ya' -> WiFi + BLE + DJI (defaults)
+        //   'y1' -> WiFi ODID only
+        //   'y2' -> BLE ODID only
+        //   'y3' -> DJI DroneID only
+        //   'y4' -> WiFi NaN (stubbed on ESP32C3; will report not supported)
+        //   'yq' -> Stop all XR1 RID
+        delay(80);
+        // Peek a follow-on char; treat whitespace / newline as "no sub char"
+        // so the operator can type plain "y\n" and get the full RID set.
+        char sub = '\0';
+        while (Serial.available()) {
+            char c = Serial.peek();
+            if (c == '\n' || c == '\r' || c == ' ' || c == '\t') {
+                Serial.read();  // drain terminator
+                continue;
+            }
+            sub = Serial.read();
+            break;
+        }
+        uint8_t mask = 0;
+        bool stopOnly = false;
+        if      (sub == '\0' || sub == 'a' || sub == 'A') mask = XR1_RID_ALL;
+        else if (sub == '1') mask = XR1_RID_WIFI;
+        else if (sub == '2') mask = XR1_RID_BLE;
+        else if (sub == '3') mask = XR1_RID_DJI;
+        else if (sub == '4') mask = XR1_RID_NAN;
+        else if (sub == 'q' || sub == 'Q') stopOnly = true;
+        else { Serial.printf("Unknown y-subcommand: '%c'\n", sub); break; }
+
+        if (stopOnly) {
+            xr1RidStop();
+            if (menuGetState() == STATE_XR1_RID_ACTIVE) menuSetState(STATE_MAIN_MENU);
+            Serial.println("[XR1-RID] stopped (yq)");
+        } else {
+            stopCurrentMode();
+            if (xr1RidStart(mask)) menuSetState(STATE_XR1_RID_ACTIVE);
+            else                   Serial.println("[XR1-RID] start failed");
+        }
+        break;
+    }
+
     case 'h':
     case '?':
         printHelp();
@@ -569,7 +618,8 @@ void loop() {
                      || st == STATE_MLRS_ACTIVE
                      || st == STATE_CUSTOM_LORA_ACTIVE
                      || st == STATE_INFRA_ACTIVE
-                     || st == STATE_XR1_ACTIVE);
+                     || st == STATE_XR1_ACTIVE
+                     || st == STATE_XR1_RID_ACTIVE);
     unsigned long blinkRate = txActive ? 200 : 1000;
 
     if (millis() - lastBlink >= blinkRate) {

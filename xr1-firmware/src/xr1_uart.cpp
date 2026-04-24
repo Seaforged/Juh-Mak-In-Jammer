@@ -7,6 +7,7 @@
 #include <stdlib.h>
 
 #include "xr1_radio.h"
+#include "remote_id.h"
 
 // ----- constants ------------------------------------------------------------
 // Names deliberately avoid LINE_MAX / PATH_MAX / ARG_MAX etc. — POSIX headers
@@ -193,6 +194,100 @@ static void cmdLed(char *args) {
     respondOk();
 }
 
+// ----- RID subcommand dispatch ---------------------------------------------
+// The top-level parser hands us everything after "RID " as a single args
+// string. Example: "WIFI JJ-XR1-TEST-001 36.8529 -75.9780 120.0 5.0 270.0".
+// Sub-verb is the first word; the remainder parses per-verb.
+static bool parseRidArgs(char *s, RemoteIdState &out) {
+    float lat = 0, lon = 0, alt = 0, spd = 0, hdg = 0;
+    char serial[32] = { 0 };
+    int  n = sscanf(s, "%31s %f %f %f %f %f", serial, &lat, &lon, &alt, &spd, &hdg);
+    if (n != 6) return false;
+    strncpy(out.serial, serial, sizeof(out.serial) - 1);
+    out.serial[sizeof(out.serial) - 1] = '\0';
+    out.latitude       = lat;
+    out.longitude      = lon;
+    out.altitudeMeters = alt;
+    out.speedMps       = spd;
+    out.headingDeg     = hdg;
+    return true;
+}
+
+static void cmdRid(char *args) {
+    // Split sub-verb from the rest.
+    while (*args == ' ' || *args == '\t') ++args;
+    char *rest = args;
+    while (*rest && *rest != ' ' && *rest != '\t') ++rest;
+    if (*rest) { *rest++ = '\0'; while (*rest == ' ' || *rest == '\t') ++rest; }
+    // Uppercase the sub-verb.
+    for (char *p = args; *p; ++p) *p = (char)toupper((unsigned char)*p);
+
+    if (strcmp(args, "STOP") == 0) {
+        remoteIdStopAll();
+        respondOk();
+        return;
+    }
+    if (strcmp(args, "STATUS") == 0) {
+        const RemoteIdStatus &st = remoteIdGetStatus();
+        Serial.printf("OK WIFI:%s BLE:%s DJI:%s NAN:%s\n",
+                      st.wifiActive ? "on" : "off",
+                      st.bleActive  ? "on" : "off",
+                      st.djiActive  ? "on" : "off",
+                      st.nanActive  ? "on" : "off");
+        return;
+    }
+
+    if (strcmp(args, "WIFI") == 0) {
+        RemoteIdState s;
+        if (!parseRidArgs(rest, s)) { respondErrStr("PARSE"); return; }
+        if (remoteIdWifiStart(s)) respondOk(); else respondErrStr("WIFI_FAIL");
+        return;
+    }
+    if (strcmp(args, "BLE") == 0) {
+        RemoteIdState s;
+        if (!parseRidArgs(rest, s)) { respondErrStr("PARSE"); return; }
+        if (remoteIdBleStart(s))  respondOk(); else respondErrStr("BLE_FAIL");
+        return;
+    }
+    if (strcmp(args, "NAN") == 0) {
+        RemoteIdState s;
+        if (!parseRidArgs(rest, s)) { respondErrStr("PARSE"); return; }
+        // NaN is stubbed on C3; returns false. Report specifically so the
+        // T3S3 can surface "not supported" to the operator.
+        if (remoteIdNanStart(s))  respondOk();
+        else                      respondErrStr("NAN_UNSUPPORTED");
+        return;
+    }
+    if (strcmp(args, "DJI") == 0) {
+        // DJI takes an extra trailing <model> param. Parse the 6 common
+        // fields first, then grab the model off the tail.
+        RemoteIdState s;
+        char modelStr[16] = { 0 };
+        float lat, lon, alt, spd, hdg;
+        char serial[32];
+        int n = sscanf(rest, "%31s %f %f %f %f %f %15s",
+                       serial, &lat, &lon, &alt, &spd, &hdg, modelStr);
+        if (n != 7) { respondErrStr("PARSE"); return; }
+        strncpy(s.serial, serial, sizeof(s.serial) - 1);
+        s.serial[sizeof(s.serial) - 1] = '\0';
+        s.latitude       = lat;
+        s.longitude      = lon;
+        s.altitudeMeters = alt;
+        s.speedMps       = spd;
+        s.headingDeg     = hdg;
+
+        uint16_t model = 0x0A;   // default Mini 2
+        if      (strcmp(modelStr, "M2") == 0)    model = 0x03;
+        else if (strcmp(modelStr, "MINI2") == 0) model = 0x0A;
+        else if (strcmp(modelStr, "AIR2S") == 0) model = 0x11;
+
+        if (djiDroneIdStart(s, model)) respondOk(); else respondErrStr("DJI_FAIL");
+        return;
+    }
+
+    respondErrStr("RID_UNKNOWN");
+}
+
 // ----- dispatch -------------------------------------------------------------
 struct CmdEntry {
     const char *name;
@@ -212,6 +307,7 @@ static const CmdEntry kCommands[] = {
     { "STATUS", cmdStatus },
     { "RESET",  cmdReset  },
     { "LED",    cmdLed    },
+    { "RID",    cmdRid    },
 };
 
 static void dispatch(char *line) {
