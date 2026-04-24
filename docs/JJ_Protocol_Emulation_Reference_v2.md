@@ -705,17 +705,19 @@ Strong local transmissions can create intermodulation products in the SX1262 rec
 
 ## 10. Items Requiring Verification
 
-| Item | Current Value | Needed Source | Priority |
+| Item | Current Value | Source | Priority |
 |---|---|---|---|
-| ELRS IN866 hop interval | Assumed 8 | ELRS `rx_main.cpp` | Low |
-| Crossfire FSK deviation | 50 kHz (estimated) | SDR capture or TBS documentation | Medium |
+| ELRS IN866 hop interval | 8 (confirmed) | ELRS `rx_main.cpp` — groups IN866 with EU868 | Resolved |
+| Crossfire FSK deviation | 42.48 kHz (CONFIRMED) | g3gg0.de SPI sniffing of SX1272 register writes (2021 RE) | Resolved |
 | Crossfire 868 channel count | ~27 (estimated from 863–870 at 260 kHz) | TBS confirmation | Medium |
-| mLRS channel count per band | Unknown | mLRS `fhss.h` — clone and read | High |
-| mLRS SF/BW per mode | Estimated | mLRS source code | High |
-| mLRS hop interval | Unknown | mLRS source code | High |
+| Crossfire LoRa 50 Hz SF/BW/CR | SF7 / BW500 / CR 4/5 (estimated from SX127x defaults + sensitivity matching) | SDR capture of real TBS Crossfire TX | Medium |
+| mLRS channel count per band | 43 (915 FCC), 10 (868 EU), 3 (433) | mLRS `fhss.h` | Resolved |
+| mLRS SF/BW per mode | 19Hz: SF7/BW500, 31Hz: SF6/BW500 | mLRS sensitivity tables (-112 / -108 dBm) | Resolved |
+| mLRS hop interval | 1 hop per frame slot (symmetric TX/RX) | mLRS architecture docs | Resolved |
+| mLRS 50 Hz FSK bitrate/deviation | ~64 kbps / 16 kHz (approximated) | Not publicly documented by mLRS project | Accepted |
 | FrSky R9 channel count | ~20 (estimated) | SDR capture | Low |
 | Meshtastic EU868 channel count | Unknown | Meshtastic source | Low |
-| SiK EU868 default NUM_CHANNELS | Unknown | SiK firmware source | Medium |
+| SiK EU868 default NUM_CHANNELS | 7 (estimated from 1 MHz band / 64 kbps channel width) | Formula: 1000 kHz / (N+2) ≥ 128 kHz → N ≤ 5.8; conservatively 7 | Resolved |
 
 ---
 

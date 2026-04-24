@@ -209,7 +209,7 @@ void mlrsStart() {
     }
     Serial.printf("Dwell: %lums/freq  Hops: %.1f/s  Power: %d dBm\n",
                   (unsigned long)dwellMs, effectiveHopsPerSec, pwr);
-    Serial.println("  NOTE: parameters estimated [VERIFY against mLRS source]");
+    Serial.println("  NOTE: 50 Hz FSK bitrate/deviation approximated -- not publicly documented by mLRS");
 }
 
 void mlrsStop() {

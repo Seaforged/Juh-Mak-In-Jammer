@@ -181,7 +181,7 @@ bool combinedStart() {
 void combinedStop() {
     // Signal the Core 1 task to exit and wait for confirmation. The task
     // sets _elrsTaskExited = true right before vTaskDelete(NULL). We poll
-    // for up to 200 ms rather than relying on a fixed delay — if the task
+    // for up to 500 ms rather than relying on a fixed delay — if the task
     // is mid-transmit (~4 ms worst case) this is ample time.
     _elrsTaskRunning = false;
     if (_elrsTaskHandle) {

@@ -150,7 +150,7 @@ void sikStart() {
 
     // Protocol info output — v2 §7.2
     float chanWidthKHz = (_band.maxFreqMHz - _band.minFreqMHz) * 1000.0f / (_numChannels + 2);
-    Serial.printf("[SiK-%s] %uch %.1f-%.1fMHz GFSK@%.0fkbps TDM [FOOTPRINT]\n",
+    Serial.printf("[SiK-%s] %uch %.1f-%.1fMHz GFSK@%.0fkbps TDM [MAVLink-FRAME]\n",
                   _band.name, _numChannels,
                   _band.minFreqMHz, _band.maxFreqMHz, airSpeed);
     Serial.printf("  Channel width: %.0fkHz  Dwell: ~20ms/freq  Hops: 50/s  Power: %d dBm\n",

@@ -15,7 +15,8 @@ static uint8_t _freqIndex = 0;
 // These are the test frequencies SENTRY-RF's spectrum scanner
 // should detect. Cycle through them with short-press during TX.
 //
-// TODO(user): Adjust this table to match your SENTRY-RF scan bands.
+// Future enhancement: operator-editable CW frequency presets via EEPROM/NVS.
+// Until then, adjust this table to match your SENTRY-RF scan bands.
 //   - 915.0: US ISM band center (ELRS/Crossfire home)
 //   - 868.0: EU ISM band center
 //   - 903.0: ELRS band start (US)

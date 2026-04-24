@@ -32,7 +32,7 @@ static const ElrsDomain ELRS_DOMAINS[] = {
     { "FCC915",  903.500f, 926.900f, 40,  20,   4 },  // v2 §3.1.1 — US FCC §15.247
     { "AU915",   915.500f, 926.900f, 20,  10,   8 },  // v2 §3.1.1 — ACMA AS/NZS 4268
     { "EU868",   863.275f, 869.575f, 13,   6,   8 },  // v2 §3.1.1 — ETSI EN 300 220
-    { "IN866",   865.375f, 866.950f,  4,   2,   8 },  // v2 §3.1.1 — WPC India [VERIFY hop interval]
+    { "IN866",   865.375f, 866.950f,  4,   2,   8 },  // v2 §3.1.1 — WPC India; hop interval 8 (ELRS rx_main.cpp groups IN866 with EU868)
     { "AU433",   433.420f, 434.420f,  3,   1,  36 },  // v2 §3.1.1, §3.1.3
     { "EU433",   433.100f, 434.450f,  3,   1,  36 },  // v2 §3.1.1, §3.1.3
     { "US433",   433.250f, 438.000f,  8,   4,  36 },  // v2 §3.1.1, §3.1.3
@@ -145,7 +145,7 @@ enum CrsfBandId {
 
 // Crossfire modulation modes — v2 ref §3.2.2, §3.2.3
 static const float    CRSF_FSK_BITRATE_KBPS    = 85.1f;   // v2 §3.2.3 [Ref P6]
-static const float    CRSF_FSK_DEVIATION_KHZ    = 50.0f;   // v2 §3.2.3 [VERIFY]
+static const float    CRSF_FSK_DEVIATION_KHZ    = 42.48f;  // g3gg0.de SPI sniffing of SX1272 register writes (TBS Crossfire 2021 RE)
 static const uint16_t CRSF_FSK_RATE_HZ          = 150;     // v2 §3.2.3 — 150 Hz packet rate
 static const uint32_t CRSF_FSK_PACKET_INTERVAL_US = 6667;  // 1000000 / 150 Hz
 static const uint16_t CRSF_LORA_RATE_HZ         = 50;      // v2 §3.2.3 — 50 Hz LoRa mode
@@ -164,7 +164,7 @@ struct SikBand {
 
 static const SikBand SIK_BANDS[] = {
     { "US915", 915.0f, 928.0f, 50 },    // v2 §3.3.1 [Ref P9]
-    { "EU868", 868.0f, 869.0f,  0 },    // v2 §3.3.1 [VERIFY channel count]
+    { "EU868", 868.0f, 869.0f,  7 },    // v2 §3.3.1 — 1 MHz band / ~140 kHz per channel at 64 kbps GFSK
 };
 
 enum SikBandId {
@@ -238,22 +238,30 @@ static const float    MESHTASTIC_US_FREQ_END   = 928.0f;
 static const uint8_t  MESHTASTIC_US_CHANNELS   = 104;  // v2 §4.3
 
 // ============================================================
-// 10. mLRS Parameters — v2 ref §3.4 [Ref P12, P14]
+// 10. mLRS Parameters — grounded from olliw42/mLRS (fhss.h + common_conf.h)
 // ============================================================
-// NOTE: Many parameters are [VERIFY] — marked with TODO
+// mLRS 915 MHz FCC: 43 channels, 902-928 MHz, LFSR hop sequence.
+//   19 Hz: SF7/BW500 (-112 dBm sensitivity)
+//   31 Hz: SF6/BW500 (-108 dBm sensitivity)
+//   50 Hz: GFSK ~64 kbps (bitrate/deviation undocumented upstream —
+//          SiK-like approximation in mlrs_sim.cpp)
+// Frame length: 91 bytes (FRAME_TX_RX_LEN)
+// Sync word: bind-phrase derived; we use 0x12 (private LoRa) as proxy.
+// Preamble: 8 symbols (mLRS default).
 
 struct MlrsMode {
     const char* name;
     uint16_t    rateHz;
-    bool        isLoRa;         // true = LoRa, false = FSK
+    bool        isLoRa;
     uint8_t     sf;             // LoRa modes only (0 for FSK)
-    // TODO [VERIFY]: channel count, BW, exact frequencies — v2 §3.4
 };
 
+// Effective SF values live in mlrs_sim.cpp's MLRS_MODE_PARAMS table; this
+// enum array keeps name/rate/modulation-kind for the menu dispatcher.
 static const MlrsMode MLRS_MODES[] = {
-    { "19Hz",   19, true,  0 },    // v2 §3.4 — SX1276/SX1262 [VERIFY SF]
-    { "31Hz",   31, true,  0 },    // v2 §3.4 — SX1262 only [VERIFY SF]
-    { "50Hz",   50, false, 0 },    // v2 §3.4 — SX1262 only, FSK
+    { "19Hz",   19, true,  7 },    // SF7/BW500 (grounded)
+    { "31Hz",   31, true,  6 },    // SF6/BW500 (grounded)
+    { "50Hz",   50, false, 0 },    // GFSK ~64 kbps (approximated)
 };
 
 static const uint8_t MLRS_MODE_COUNT = sizeof(MLRS_MODES) / sizeof(MLRS_MODES[0]);

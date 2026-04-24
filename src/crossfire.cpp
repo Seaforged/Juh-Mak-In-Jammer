@@ -100,8 +100,8 @@ void crossfireStart() {
 
     int state = _radio->beginFSK(
         crsfChanToFreq(_crsfHopSeq[0]),
-        CRSF_FSK_BITRATE_KBPS,     // 85.1 kbps — v2 §3.2.3
-        CRSF_FSK_DEVIATION_KHZ,    // 50 kHz — v2 §3.2.3 [VERIFY]
+        CRSF_FSK_BITRATE_KBPS,     // 85.1 kbps (g3gg0.de SPI sniffing)
+        CRSF_FSK_DEVIATION_KHZ,    // 42.48 kHz (g3gg0.de SX1272 register RE)
         156.2,                      // RX bandwidth kHz
         pwr,
         16,                         // preamble length
@@ -122,7 +122,7 @@ void crossfireStart() {
     _radio->startTransmit(_crsfFrame, crsfBuildFrame());
     _crsfPacketCount++;
 
-    Serial.printf("[CRSF-%s] %uch %.0f-%.0fMHz FSK %.1fkbps %uHz %d dBm [FOOTPRINT]\n",
+    Serial.printf("[CRSF-%s] %uch %.0f-%.0fMHz FSK %.1fkbps %uHz %d dBm [CRSF-FRAME]\n",
                   band.name, band.channels,
                   band.freqStartMHz, band.freqStopMHz,
                   CRSF_FSK_BITRATE_KBPS, CRSF_FSK_RATE_HZ, pwr);
@@ -145,17 +145,21 @@ void crossfireStartLoRa() {
     _radio->reset();
     delay(100);
 
-    // Crossfire LoRa 50 Hz — v2 §3.2.2. SF/BW/CR are proprietary; these are
-    // reasonable approximations. Crossfire is NOT ELRS — uses explicit header.
-    // [VERIFY] exact SF/BW/CR against an SDR capture of a real Crossfire TX.
+    // Crossfire LoRa 50 Hz mode — SX1272/SX1276 based (g3gg0.de teardown).
+    // SF7/BW500 gives sensitivity ~-118 dBm, matching the "longer range"
+    // characteristic TBS documents for this mode. CR 4/5 is the SX127x
+    // default. Sync 0x12 is the private-LoRa-network byte the SX127x uses
+    // when the TX isn't configured for the LoRaWAN public network.
+    // Values estimated from SX1272 defaults + sensitivity matching —
+    // exact bits need SDR capture of a real Crossfire TX to lock down.
     int state = _radio->begin(
         crsfChanToFreq(_crsfHopSeq[0]),
-        500.0f,                   // BW 500 kHz [VERIFY]
-        7,                        // SF7 [VERIFY]
-        7,                        // CR 4/7 [VERIFY]
-        RADIOLIB_SX126X_SYNC_WORD_PRIVATE,  // 0x12 placeholder [VERIFY]
+        500.0f,                   // BW 500 kHz (SX127x)
+        7,                        // SF7 (SX127x default LR mode)
+        5,                        // CR 4/5 (SX127x default)
+        RADIOLIB_SX126X_SYNC_WORD_PRIVATE,  // 0x12 private network
         pwr,
-        8,                        // preamble [VERIFY]
+        8,                        // preamble (SX127x default)
         1.8, false
     );
 
@@ -175,7 +179,7 @@ void crossfireStartLoRa() {
     _radio->startTransmit(_crsfFrame, crsfBuildFrame());
     _crsfPacketCount++;
 
-    Serial.printf("[CRSF-%s] %uch %.0f-%.0fMHz LoRa SF7/BW500 %uHz %d dBm [FOOTPRINT, VERIFY SF/BW/CR]\n",
+    Serial.printf("[CRSF-%s] %uch %.0f-%.0fMHz LoRa SF7/BW500/CR4-5 %uHz %d dBm [FOOTPRINT]\n",
                   band.name, band.channels,
                   band.freqStartMHz, band.freqStopMHz,
                   CRSF_LORA_RATE_HZ, pwr);
