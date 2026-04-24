@@ -103,7 +103,7 @@ void remoteIdUpdate() {
 
 void remoteIdStopAll() {
     if (g_ridStatus.wifiActive) remoteIdWifiStop();
-    if (g_ridStatus.bleActive)  remoteIdBleStop();
+    remoteIdBleStop();  // safe no-op; also cancels pending raw-adv/start callbacks
     if (g_ridStatus.djiActive)  djiDroneIdStop();
     if (g_ridStatus.nanActive)  remoteIdNanStop();
 }

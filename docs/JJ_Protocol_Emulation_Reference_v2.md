@@ -31,6 +31,23 @@ All JJ simulations are constrained by the Semtech SX1262 transceiver on the Lily
 | Frequency resolution | 1 Hz (61 Hz via FREQ register) | Sufficient for all channel plans |
 | Single radio | 1 TX at a time | Cannot simulate simultaneous uplink + downlink |
 
+### 1.2 Current JJ v3 Fidelity Labels
+
+These labels describe what JJ currently emits, not the theoretical goal. They should match the serial help text so operators do not overstate test coverage.
+
+| JJ mode | Current fidelity label | Notes |
+|---|---|---|
+| ELRS 900 MHz | PACKET-AUTH + CRC-14 | LoRa PHY, implicit header, nonce-varying OTA packets with CRC-14. |
+| ELRS 2.4 GHz | PACKET-AUTH + CRC-14 per-nonce | LR1121 LoRa PHY with per-packet CRC recompute. |
+| Crossfire | CRSF-FRAME, rate PARTIAL | CRSF payload framing is present; timing/adaptive hop behavior remains partial. |
+| SiK Radio | MAVLink HEARTBEAT+STATUS | MAVLink content present; full TDM and clock-sync behavior remains approximate. |
+| mLRS | FOOTPRINT, ch grounded | Channel plan is grounded; packet content/proprietary details remain incomplete. |
+| Ghost / FrSky / FlySky | FOOTPRINT | Energy/modulation footprints only; proprietary link-layer content is not implemented. |
+| DJI Energy | FOOTPRINT, not OFDM | LR1121 GFSK energy approximation only; not an OcuSync/Lightbridge waveform. |
+| ASTM WiFi ODID | ODID-PACK | Beacon + vendor IE + ODID message pack. |
+| ASTM BLE ODID | BLE4-23B PARTIAL | BLE 4 legacy advertising carries 23 of 25 ODID bytes; BLE 5 Extended ADV is not implemented. |
+| DJI DroneID | PARTIAL | Vendor IE and key telemetry fields are present; accept/reject by DJI-specific parsers requires SDR/runtime validation. |
+
 ---
 
 ## 2. Regulatory Framework
@@ -378,6 +395,20 @@ These drones may use:
 - Any SF/BW combination supported by SX1262
 
 **JJ simulation:** A "Custom LoRa" mode with user-configurable SF, BW, frequency, hop pattern, and packet rate. This tests SENTRY-RF's ability to detect non-standard drone links that don't match any known protocol signature.
+
+---
+
+### 3.7 Remote ID Transports (XR1 ESP32C3)
+
+JJ v3 emits Remote ID test beacons from the XR1 ESP32C3 WiFi/BLE radios, independent of the LR1121 RF emitter.
+
+| Transport | Current fidelity | Implementation notes |
+|---|---|---|
+| ASTM F3411 WiFi ODID | ODID-PACK | Standard 802.11 beacon, vendor IE OUI FA:0B:BC type 0x0D, ODID message pack with Basic ID, Location, System, and Operator ID. Beacon interval field is 1000 TU to match the 1 Hz transmit cadence. |
+| ASTM F3411 BLE ODID | BLE4-23B PARTIAL | BLE 4 Legacy ADV is limited to 31 bytes total. After Flags and Service Data overhead, JJ can carry 23 of the 25 ODID message bytes. Full 25-byte ODID over BLE requires BLE 5 Extended Advertising, which is not implemented. |
+| DJI DroneID | PARTIAL | DJI OUI 26:37:12, DroneID payload, degree x 174533 GPS encoding, sequence, model, and plausible telemetry fields are present. Parser acceptance still needs capture-based validation against Kismet/AeroScope-style decoders. |
+
+**BLE4 truncation impact:** The 23-byte BLE ODID payload is intentional and labeled in the UI as `[BLE4-23B]`. It is suitable for testing BLE4 Remote ID discovery and message rotation behavior, but not for claiming byte-exact full-message ASTM BLE conformance. A future BLE 5 Extended Advertising implementation is required for the full 25-byte message without truncation.
 
 ---
 

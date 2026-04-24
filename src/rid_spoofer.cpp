@@ -309,7 +309,7 @@ static void bleGapCallback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t 
                 _bleAdvStartPending = false;
                 break;
             }
-            if (_bleAdvStartPending && _ridRunning && !_bleAdvRunning) {
+            if (_ridRunning && !_bleAdvRunning) {
                 _bleAdvStartPending = true;
             }
             break;
@@ -381,6 +381,7 @@ static void bleInit() {
 
 static void bleTransmitOdid() {
     if (!_bleReady) return;
+    if (_bleAdvConfigPending) return;
     if (_bleAdvStartPending) {
         _bleAdvStartPending = false;
         if (esp_ble_gap_start_advertising(&_bleAdvParams) != ESP_OK) {
@@ -389,7 +390,6 @@ static void bleTransmitOdid() {
         }
         return;
     }
-    if (_bleAdvConfigPending) return;
 
     // Build BLE advertising data with a rotating ASTM F3411 ODID message.
     // BLE ODID format: AD struct with type 0x16 (Service Data)
@@ -414,10 +414,10 @@ static void bleTransmitOdid() {
     uint8_t tempMsg[ODID_MSG_SIZE];
     buildBleRotatingMsg(tempMsg);
     _bleAdvData[pos++] = nextBleAdCounter(tempMsg);  // app_code=0 | counter
+    // ASTM F3411 BLE4 Legacy: 23/25 bytes. Full 25B requires BLE 5 Extended ADV (not implemented).
     memcpy(&_bleAdvData[pos], tempMsg, BLE4_ODID_MSG_SIZE);
     pos += BLE4_ODID_MSG_SIZE;
 
-    if (!_bleAdvRunning) _bleAdvStartPending = true;
     if (esp_ble_gap_config_adv_data_raw(_bleAdvData, pos) == ESP_OK) {
         _bleAdvConfigPending = true;
         _bleCount++;
