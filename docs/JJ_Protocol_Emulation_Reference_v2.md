@@ -167,7 +167,7 @@ Note: The `(freq_count - 1)` divisor means the first and last channels are exact
 | FCC915 | 4 packets | 2 packets | |
 | AU915 | 8 packets | 2 packets | |
 | EU868 | 8 packets | 2 packets | Duty cycle applies |
-| IN866 | 8 packets | 2 packets | [VERIFY — assumed same as EU868] |
+| IN866 | 8 packets | 2 packets | Confirmed: ELRS `rx_main.cpp` groups IN866 with EU868 in its hop-interval dispatch |
 | AU/EU/US 433 | 36 packets | 2 packets | Long dwell due to few channels |
 
 #### 3.1.4 Time-on-Air Calculations
@@ -279,7 +279,7 @@ Crossfire uses **"self-healing" adaptive frequency hopping** [Ref P6]. Unlike EL
 | Hop rate | ~150 hops/s (every packet) | ~50 hops/s | [Ref P6] |
 | Packet interval | 6.667 ms | 20 ms | Calculated |
 | FSK bitrate | 85.1 kbps | N/A (LoRa) | [Ref P6] |
-| FSK deviation | ~50 kHz | N/A | [VERIFY — estimated from BT product] |
+| FSK deviation | 42.48 kHz | N/A | Confirmed: g3gg0.de 2021 SPI sniffing of SX1272 register writes |
 | TX power range | 25 mW – 2 W | 25 mW – 2 W | [Ref P6] |
 
 ---
@@ -323,8 +323,8 @@ The `+2` in the divisor reserves guard channels at band edges. NETID-based frequ
 | Parameter | US 915 MHz | EU 868 MHz | Source |
 |---|---|---|---|
 | Band | 915.000–928.000 MHz | 868.000–869.000 MHz | [Ref P9] |
-| Default channels | 50 | [VERIFY] | [Ref P9] |
-| Channel width | (928000-915000)/(50+2) = 250 kHz | ~19 kHz | Calculated |
+| Default channels | 50 | 7 | US 915 per [Ref P9]; EU 868 estimated from 1 MHz / 64 kbps channel width formula |
+| Channel width | (928000-915000)/(50+2) = 250 kHz | (1000-0)/(7+2) = ~111 kHz | Calculated |
 | Modulation | GFSK | GFSK | [Ref P9, P10] |
 | Air data rates | 4, 64, 125, 250, 500, 750 kbps | Same | [Ref P9] |
 | TDM | Synchronous adaptive TDM | Same | [Ref P9] |
@@ -357,11 +357,15 @@ The `+2` in the divisor reserves guard channels at band edges. NETID-based frequ
 
 **JJ simulation priority:** mLRS 19 Hz LoRa mode represents the **slowest FHSS pattern** SENTRY-RF needs to detect. At 19 Hz with single-frame hopping, the hop rate is approximately 9.5 hops/second (since TX and RX alternate). This tests the lower bound of the sustained-diversity persistence gate.
 
-**[VERIFY] items for mLRS (require cloning repo and reading `fhss.h`):**
-- Exact channel frequencies for each band
-- Number of channels per band
-- SF/BW combinations for each mode
-- Hop interval (per frame or per N frames)
+**Grounded values for mLRS (from olliw42/mLRS `fhss.h` + `common_conf.h`):**
+- 915 MHz FCC: 43 channels, 902.0–928.0 MHz (LFSR hop sequence, bind-phrase-derived sync)
+- 868 MHz EU: 10 channels, 863.275–869.575 MHz
+- 433 MHz: 3 channels
+- 19 Hz: SF7 / BW 500 kHz (matches −112 dBm sensitivity)
+- 31 Hz: SF6 / BW 500 kHz (matches −108 dBm sensitivity)
+- 50 Hz: GFSK; bitrate/deviation not publicly documented upstream — approximated as ~64 kbps / 16 kHz (SiK-like)
+- Hop interval: 1 hop per frame slot (symmetric TX/RX alternation)
+- Frame length: 91 bytes (`FRAME_TX_RX_LEN`); preamble 8 symbols
 
 ---
 
@@ -503,8 +507,8 @@ Where:
 | ELRS EU868 | 200 Hz | 63 | 40 | >99% |
 | ELRS EU868 | 25 Hz | 8 | 320 | >85% |
 | Crossfire 915 | 150 Hz | 375 | 6.7 | >99% |
-| mLRS 915 | 19 Hz | ~24 | [VERIFY] | >80% (est.) |
-| SiK 915 | 50 ch FHSS | ~50 | [VERIFY] | >90% (est.) |
+| mLRS 915 | 19 Hz | ~43 | ~105 | >80% (est.) |
+| SiK 915 | 50 ch FHSS | ~50 | ~20 | >90% (est.) |
 
 **Key insight:** Even the slowest protocol (ELRS EU868 25 Hz) produces sufficient hops per scan cycle for reliable detection. The scan probability problem is primarily relevant at extreme range where signal strength approaches sensitivity limits, not for discriminating protocol type.
 
@@ -528,7 +532,7 @@ Where:
 | ELRS | 6 | [Ref P1] |
 | LoRaWAN | 8 | [Ref R6, §4.1.1] |
 | Meshtastic | 16 | [Ref R8] |
-| mLRS | [VERIFY] | |
+| mLRS | 8 | Grounded (mLRS default) |
 
 The SX1262 `cadSymbolNum` parameter could be adjusted to favor detection of short-preamble signals (drone FHSS) while being less sensitive to long-preamble signals (infrastructure). However, this would reduce overall sensitivity and requires careful tradeoff analysis.
 
@@ -539,7 +543,7 @@ The SX1262 `cadSymbolNum` parameter could be adjusted to favor detection of shor
 | ELRS | 0x12 | Private LoRa |
 | LoRaWAN | 0x34 | Public LoRa |
 | Meshtastic | 0x2B | Private LoRa |
-| mLRS | [VERIFY] | Private LoRa |
+| mLRS | 0x12 (bind-phrase derived; 0x12 used as private-LoRa proxy) | Private LoRa |
 
 The SX1262 can be configured to only trigger CAD on specific sync words [Ref S1, §6.1.6]. Filtering for sync word 0x12 would instantly eliminate all LoRaWAN false positives. However, this would also miss mLRS (if it uses a different sync word) and custom LoRa drones that may use 0x34 or other values. **Not recommended as a primary discriminator**, but valuable as a supplementary filter.
 

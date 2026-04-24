@@ -164,7 +164,7 @@ struct SikBand {
 
 static const SikBand SIK_BANDS[] = {
     { "US915", 915.0f, 928.0f, 50 },    // v2 §3.3.1 [Ref P9]
-    { "EU868", 868.0f, 869.0f,  7 },    // v2 §3.3.1 — 1 MHz band / ~140 kHz per channel at 64 kbps GFSK
+    { "EU868", 868.0f, 869.0f,  7 },    // v2 §3.3.1 — 1 MHz band / ~111 kHz per channel at 64 kbps GFSK (1000/(7+2))
 };
 
 enum SikBandId {
