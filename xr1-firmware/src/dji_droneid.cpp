@@ -55,7 +55,11 @@ extern "C" void ridWifiRefDown();
 static constexpr uint8_t DJI_OUI[3]     = { 0x26, 0x37, 0x12 };
 static constexpr uint8_t DJI_OUI_TYPE   = 0x58;   // DroneID v2 frames
 
-static constexpr float DJI_LL_SCALE = 174533.0f;  // degrees × this = int32
+// double (not float) so the lat/lon multiplication retains double precision
+// before the int32 cast. At extreme latitudes the float mantissa (~7 sig
+// figs) would truncate below the ~1-meter precision DJI's int32 encoding
+// preserves.
+static constexpr double DJI_LL_SCALE = 174533.0;  // degrees × this = int32
 
 static RemoteIdState s_state = {};
 static uint16_t      s_modelCode = 0x0A;
@@ -77,7 +81,7 @@ static constexpr uint8_t DJI_BEACON_HEADER[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // BSSID (same as source)
     0x00, 0x00,                          // Sequence (HW fills)
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // Timestamp
-    0x64, 0x00,                          // Beacon interval 100 TU
+    0xC8, 0x00,                          // Beacon interval 200 TU (~204.8 ms)
     0x01, 0x00,                          // Capability: ESS
     0x00, 0x00,                          // SSID IE length=0
 };

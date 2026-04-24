@@ -97,14 +97,15 @@ static bool isResponseLine(const char *line) {
 // that look like async debug output are silently dropped — otherwise, boot
 // banners and future asynchronous DONE messages would be mistaken for
 // responses. Returns true iff we saw an OK line.
-static bool sendCmdExpectOk(const char *cmd, char *respOut = nullptr, size_t respOutSize = 0) {
+static bool sendCmdExpectOkWithTimeout(const char *cmd, uint32_t timeoutMs,
+                                       char *respOut = nullptr, size_t respOutSize = 0) {
     // Drain anything that might have accumulated since the last command.
     while (Serial1.available() > 0) { (void)Serial1.read(); }
 
     Serial1.print(cmd);
     Serial1.print('\n');
 
-    const uint32_t deadline = millis() + s_timeoutMs;
+    const uint32_t deadline = millis() + timeoutMs;
     char resp[RESP_BUF_SZ];
     while (millis() < deadline) {
         // Compute remaining time so readResponse can honor the overall deadline.
@@ -129,8 +130,16 @@ static bool sendCmdExpectOk(const char *cmd, char *respOut = nullptr, size_t res
     return false;
 }
 
+static bool sendCmdExpectOk(const char *cmd, char *respOut = nullptr, size_t respOutSize = 0) {
+    return sendCmdExpectOkWithTimeout(cmd, s_timeoutMs, respOut, respOutSize);
+}
+
 bool xr1Ping() {
     return sendCmdExpectOk("PING");
+}
+
+bool xr1PingWithTimeout(uint32_t timeoutMs) {
+    return sendCmdExpectOkWithTimeout("PING", timeoutMs);
 }
 
 bool xr1SetFreq(float mhz) {
@@ -143,6 +152,21 @@ bool xr1SetLoRa(uint8_t sf, float bwKhz, uint8_t cr) {
     char cmd[48];
     snprintf(cmd, sizeof(cmd), "LORA %u %.3f %u",
              (unsigned)sf, bwKhz, (unsigned)cr);
+    return sendCmdExpectOk(cmd);
+}
+
+bool xr1SetLoRaEx(uint8_t sf, float bwKhz, uint8_t cr,
+                  uint16_t preamble, bool implicitHeader, uint8_t implicitLen) {
+    char cmd[80];
+    if (implicitHeader && implicitLen > 0) {
+        snprintf(cmd, sizeof(cmd), "LORA %u %.3f %u %u %u %u",
+                 (unsigned)sf, bwKhz, (unsigned)cr,
+                 (unsigned)preamble, 1u, (unsigned)implicitLen);
+    } else {
+        snprintf(cmd, sizeof(cmd), "LORA %u %.3f %u %u %u",
+                 (unsigned)sf, bwKhz, (unsigned)cr,
+                 (unsigned)preamble, implicitHeader ? 1u : 0u);
+    }
     return sendCmdExpectOk(cmd);
 }
 
@@ -174,13 +198,19 @@ bool xr1Transmit(const uint8_t *data, uint8_t len) {
 }
 
 bool xr1StartHop(const float *channels, uint8_t count, uint16_t dwellMs) {
+    return xr1StartHopEx(channels, count, dwellMs, 0, 0, 0);
+}
+
+bool xr1StartHopEx(const float *channels, uint8_t count, uint16_t dwellMs,
+                   uint32_t packetIntervalUs, uint8_t packetsPerHop,
+                   uint8_t payloadLen) {
     if (count == 0 || count > 80) {
         Serial.println("[XR1-ERR] xr1StartHop: invalid channel count");
         return false;
     }
     // "HOP " + (≤ 80 × ~9 chars) + " " + dwell. Phase 4 bumped from 32 to 80
     // to carry the full ELRS 2.4 GHz channel set in one command.
-    char cmd[960];
+    char cmd[1024];
     size_t pos = 0;
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, "HOP ");
     for (uint8_t i = 0; i < count; ++i) {
@@ -188,6 +218,12 @@ bool xr1StartHop(const float *channels, uint8_t count, uint16_t dwellMs) {
                         i == 0 ? "" : ",", channels[i]);
     }
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, " %u", (unsigned)dwellMs);
+    if (packetIntervalUs > 0 && packetsPerHop > 0 && payloadLen > 0) {
+        pos += snprintf(cmd + pos, sizeof(cmd) - pos, " %lu %u %u",
+                        (unsigned long)packetIntervalUs,
+                        (unsigned)packetsPerHop,
+                        (unsigned)payloadLen);
+    }
     return sendCmdExpectOk(cmd);
 }
 

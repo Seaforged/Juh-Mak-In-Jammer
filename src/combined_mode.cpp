@@ -163,8 +163,14 @@ void combinedStop() {
         while (!_elrsTaskExited && millis() < deadline) {
             vTaskDelay(pdMS_TO_TICKS(5));
         }
+        if (!_elrsTaskExited) {
+            Serial.println("COMBINED: ELRS task exit timeout â€” forcing delete");
+            vTaskDelete(_elrsTaskHandle);
+            _elrsTaskExited = true;
+        }
         _elrsTaskHandle = nullptr;
     }
+    if (_radio) _radio->standby();
 
     // Stop RID
     ridStop();

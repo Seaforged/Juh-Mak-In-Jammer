@@ -3,9 +3,8 @@
 // radio. Non-connectable advertisement (ADV_NONCONN_IND) carrying Service
 // Data (AD type 0x16, UUID 0xFFFA) with a single ODID message per packet.
 //
-// Messages rotate Location 3 : 1 Basic ID (matching the T3S3 fix for
-// detector-friendly cadence). The lower nibble of the app code byte is a
-// rotating AD counter per the ASTM spec.
+// Messages rotate Location x3, then Basic ID, System, and Operator ID. The
+// lower nibble of the app code byte is a rotating AD counter per message type.
 //
 // ESP32C3 BLE stack is Bluedroid. Advertising is started once; we refresh
 // adv data at 1 Hz with the updated ODID payload so the controller keeps
@@ -30,12 +29,8 @@ extern RemoteIdStatus g_ridStatus;
 // ----- BLE stack state -----------------------------------------------------
 static bool s_bleStackUp = false;
 static RemoteIdState s_state = {};
-
-static void bleGapCb(esp_gap_ble_cb_event_t /*event*/,
-                     esp_ble_gap_cb_param_t * /*param*/) {
-    // Advertising callbacks are acknowledgments we don't need to act on —
-    // the driver keeps beaconing on its own until we call stop_advertising.
-}
+static bool s_advStartPending = false;
+static bool s_advRunning = false;
 
 static esp_ble_adv_params_t ADV_PARAMS = {
     .adv_int_min       = 0x20,   // 20 ms
@@ -47,6 +42,48 @@ static esp_ble_adv_params_t ADV_PARAMS = {
     .channel_map       = ADV_CHNL_ALL,
     .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
 };
+
+static void bleGapCb(esp_gap_ble_cb_event_t event,
+                     esp_ble_gap_cb_param_t *param) {
+    switch (event) {
+        case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
+            if (param->adv_data_raw_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+                Serial.printf("[XR1-RID] BLE raw adv config failed: %d\n",
+                              (int)param->adv_data_raw_cmpl.status);
+                s_advStartPending = false;
+                if (!s_advRunning) g_ridStatus.bleActive = false;
+                break;
+            }
+            if (s_advStartPending && g_ridStatus.bleActive && !s_advRunning) {
+                if (esp_ble_gap_start_advertising(&ADV_PARAMS) != ESP_OK) {
+                    Serial.println("[XR1-RID] BLE adv start request failed");
+                    s_advStartPending = false;
+                    g_ridStatus.bleActive = false;
+                }
+            }
+            s_advStartPending = false;
+            break;
+        case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
+            if (param->adv_start_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+                Serial.printf("[XR1-RID] BLE adv start failed: %d\n",
+                              (int)param->adv_start_cmpl.status);
+                s_advRunning = false;
+                g_ridStatus.bleActive = false;
+            } else {
+                s_advRunning = true;
+            }
+            break;
+        case ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT:
+            if (param->adv_stop_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+                Serial.printf("[XR1-RID] BLE adv stop failed: %d\n",
+                              (int)param->adv_stop_cmpl.status);
+            }
+            s_advRunning = false;
+            break;
+        default:
+            break;
+    }
+}
 
 static bool bringUpBleIfNeeded() {
     if (s_bleStackUp) return true;
@@ -82,8 +119,11 @@ static bool bringUpBleIfNeeded() {
 }
 
 // ----- ODID message encoding (one-at-a-time, rotating) ---------------------
-static uint8_t s_adCounter  = 0;   // low nibble of app code byte; rotates 0..F
-static uint8_t s_locCounter = 0;   // drives the 3:1 Location:BasicID rotation
+// Per-message-type AD counters (Fix E). Indexed by the ODID message type
+// nibble (msg[0] >> 4): 0 BasicID, 1 Location, 4 System, 5 OperatorID.
+// Size 6 covers the four we emit over BLE plus two unused slots.
+static uint8_t s_adCounters[6] = { 0 };
+static uint8_t s_locCounter    = 0;   // drives the 6-slot rotation
 
 static void fillBasicId(ODID_BasicID_data &b) {
     memset(&b, 0, sizeof(b));
@@ -112,23 +152,66 @@ static void fillLocation(ODID_Location_data &l) {
     l.TimeStamp       = (float)((millis() / 100) % 36000) / 10.0f;
 }
 
+static void fillSystem(ODID_System_data &sy) {
+    memset(&sy, 0, sizeof(sy));
+    static constexpr double OPERATOR_OFFSET_DEG = 0.001;
+    sy.OperatorLocationType = ODID_OPERATOR_LOCATION_TYPE_TAKEOFF;
+    sy.ClassificationType   = ODID_CLASSIFICATION_TYPE_UNDECLARED;
+    sy.OperatorLatitude     = s_state.latitude - OPERATOR_OFFSET_DEG;
+    sy.OperatorLongitude    = s_state.longitude - OPERATOR_OFFSET_DEG;
+    sy.AreaCount            = 1;
+    sy.AreaRadius           = 0;
+    sy.AreaCeiling          = -1000.0f;
+    sy.AreaFloor            = -1000.0f;
+    sy.OperatorAltitudeGeo  = s_state.altitudeMeters - 5.0f;
+    sy.Timestamp            = 0;
+}
+
+static void fillOperator(ODID_OperatorID_data &o) {
+    memset(&o, 0, sizeof(o));
+    o.OperatorIdType = ODID_OPERATOR_ID;
+    snprintf(o.OperatorId, sizeof(o.OperatorId), "OP-%s", s_state.serial);
+    o.OperatorId[sizeof(o.OperatorId) - 1] = '\0';
+}
+
 // Build a single 25-byte ODID message into `msg`. Returns true on success.
+// Fix D: 6-slot rotation covers BasicID, Location×3, System, OperatorID —
+// all four ASTM F3411 message types required on BLE, with Location
+// oversampled 3:1 so receivers get fast position updates.
 static bool buildRotatingMsg(uint8_t *msg /* 25 bytes */) {
+    const uint8_t slot = (uint8_t)(s_locCounter % 6);
     ++s_locCounter;
-    if ((s_locCounter & 0x03) != 0) {
-        // Three of every four messages are Location — matches the T3S3 fix.
+
+    if (slot < 3) {
         ODID_Location_data  loc;
         ODID_Location_encoded enc;
         fillLocation(loc);
         if (encodeLocationMessage(&enc, &loc) != ODID_SUCCESS) return false;
         memcpy(msg, &enc, ODID_MESSAGE_SIZE);
-    } else {
-        ODID_BasicID_data  b;
+        return true;
+    }
+    if (slot == 3) {
+        ODID_BasicID_data b;
         ODID_BasicID_encoded enc;
         fillBasicId(b);
         if (encodeBasicIDMessage(&enc, &b) != ODID_SUCCESS) return false;
         memcpy(msg, &enc, ODID_MESSAGE_SIZE);
+        return true;
     }
+    if (slot == 4) {
+        ODID_System_data sy;
+        ODID_System_encoded enc;
+        fillSystem(sy);
+        if (encodeSystemMessage(&enc, &sy) != ODID_SUCCESS) return false;
+        memcpy(msg, &enc, ODID_MESSAGE_SIZE);
+        return true;
+    }
+    // slot == 5
+    ODID_OperatorID_data op;
+    ODID_OperatorID_encoded enc;
+    fillOperator(op);
+    if (encodeOperatorIDMessage(&enc, &op) != ODID_SUCCESS) return false;
+    memcpy(msg, &enc, ODID_MESSAGE_SIZE);
     return true;
 }
 
@@ -157,9 +240,16 @@ static void rebuildAdv() {
     s_advData[i++] = 0x16;               // AD type: Service Data
     s_advData[i++] = 0xFA;               // UUID low byte
     s_advData[i++] = 0xFF;               // UUID high byte
-    // App code: high nibble = ASTM identifier 0x0, low nibble = rotating counter
-    s_advData[i++] = (uint8_t)(s_adCounter & 0x0F);
-    s_adCounter = (s_adCounter + 1) & 0x0F;
+    // App code byte: high nibble = ASTM identifier 0x0, low nibble = rotating
+    // counter per message type (Fix E). The type lives in the upper nibble of
+    // byte 0 of the encoded ODID message. Using a per-type counter matches
+    // how real drones increment: each message type's counter advances only
+    // when that type is actually transmitted, giving receivers a monotonic
+    // per-type sequence.
+    const uint8_t typeNibble = (uint8_t)(odid[0] >> 4);
+    const uint8_t typeIdx    = (typeNibble < 6) ? typeNibble : 0;
+    s_advData[i++] = (uint8_t)(s_adCounters[typeIdx] & 0x0F);
+    s_adCounters[typeIdx] = (uint8_t)((s_adCounters[typeIdx] + 1) & 0x0F);
     // ODID payload truncated from 25 to 23 bytes (we drop the last two; most
     // receivers accept this per ASTM F3411-22a §5.2.3.2 BLE4 fallback path).
     memcpy(&s_advData[i], odid, 23);
@@ -192,13 +282,20 @@ bool remoteIdBleStart(const RemoteIdState &state) {
         return false;
     }
 
+    memset(s_adCounters, 0, sizeof(s_adCounters));
+    s_locCounter = 0;
     rebuildAdv();
     if (s_advDataLen == 0) {
         Serial.println("[XR1-RID] BLE adv encoding failed");
         return false;
     }
-    esp_ble_gap_config_adv_data_raw(s_advData, s_advDataLen);
-    esp_ble_gap_start_advertising(&ADV_PARAMS);
+    s_advRunning = false;
+    s_advStartPending = true;
+    if (esp_ble_gap_config_adv_data_raw(s_advData, s_advDataLen) != ESP_OK) {
+        s_advStartPending = false;
+        Serial.println("[XR1-RID] BLE raw adv config request failed");
+        return false;
+    }
 
     g_ridStatus.bleActive = true;
     g_ridStatus.bleFrameCount = 0;
@@ -209,7 +306,11 @@ bool remoteIdBleStart(const RemoteIdState &state) {
 
 void remoteIdBleStop() {
     if (!g_ridStatus.bleActive) return;
-    esp_ble_gap_stop_advertising();
+    s_advStartPending = false;
+    if (s_advRunning) {
+        esp_ble_gap_stop_advertising();
+    }
+    s_advRunning = false;
     g_ridStatus.bleActive = false;
     Serial.printf("[XR1-RID] BLE adv OFF (%u refreshes)\n",
                   (unsigned)g_ridStatus.bleFrameCount);

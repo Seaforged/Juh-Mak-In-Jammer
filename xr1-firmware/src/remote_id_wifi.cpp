@@ -104,10 +104,11 @@ static void fillLocation(ODID_Location_data &l) {
 
 static void fillSystem(ODID_System_data &sy) {
     memset(&sy, 0, sizeof(sy));
+    static constexpr double OPERATOR_OFFSET_DEG = 0.001;
     sy.OperatorLocationType = ODID_OPERATOR_LOCATION_TYPE_TAKEOFF;
     sy.ClassificationType   = ODID_CLASSIFICATION_TYPE_UNDECLARED;
-    sy.OperatorLatitude     = s_state.latitude;
-    sy.OperatorLongitude    = s_state.longitude;
+    sy.OperatorLatitude     = s_state.latitude - OPERATOR_OFFSET_DEG;
+    sy.OperatorLongitude    = s_state.longitude - OPERATOR_OFFSET_DEG;
     sy.AreaCount            = 1;
     sy.AreaRadius           = 0;
     sy.AreaCeiling          = -1000.0f;   // invalid sentinel
@@ -172,7 +173,7 @@ static constexpr uint8_t BEACON_HEADER[] = {
     0x00, 0x00,                          // Sequence control (HW will fill)
     // Fixed params: timestamp (8) + interval (2) + capability (2) = 12 bytes
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x64, 0x00,                          // Beacon interval 100 TU
+    0xE8, 0x03,                          // Beacon interval 1000 TU (~1.024 s)
     0x01, 0x00,                          // Capability: ESS
     // SSID IE (hidden, length 0)
     0x00, 0x00,

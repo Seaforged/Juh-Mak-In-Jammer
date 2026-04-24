@@ -38,6 +38,8 @@ static uint32_t _wifiCount = 0;
 static uint32_t _bleCount = 0;
 static bool _wifiReady = false;
 static bool _bleReady = false;
+static bool _bleAdvRunning = false;
+static bool _bleAdvStartPending = false;
 
 // TX timing — send one burst per second (WiFi + BLE)
 static unsigned long _lastTxMs = 0;
@@ -189,9 +191,9 @@ static size_t buildBeaconFrame() {
     // --- Beacon Frame Body ---
     // Timestamp (8 bytes, filled by HW or zeros)
     memset(&_beaconFrame[pos], 0, 8); pos += 8;
-    // Beacon interval: 100 TU (102.4 ms)
-    _beaconFrame[pos++] = 0x64;
-    _beaconFrame[pos++] = 0x00;
+    // Beacon interval: 1000 TU (~1.024 s), matching the actual 1 Hz scheduler.
+    _beaconFrame[pos++] = 0xE8;
+    _beaconFrame[pos++] = 0x03;
     // Capability info
     _beaconFrame[pos++] = 0x01;
     _beaconFrame[pos++] = 0x00;
@@ -271,6 +273,8 @@ static void wifiTransmitBeacon() {
 // ============================================================
 
 static uint8_t _bleAdvData[31];  // max BLE 4 adv payload
+static uint8_t _bleAdCounters[6] = { 0 };
+static uint8_t _bleRotation = 0;
 
 // BLE 4 Legacy advertising has a hard 31-byte cap on the entire advertising
 // payload. After the mandatory Flags AD (3 bytes) and the Service Data AD
@@ -284,9 +288,68 @@ static uint8_t _bleAdvData[31];  // max BLE 4 adv payload
 static const uint8_t BLE4_ODID_MSG_SIZE = 23;
 
 static void bleGapCallback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
-    // We don't need to handle any events for advertising-only mode
-    (void)event;
-    (void)param;
+    switch (event) {
+        case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
+            if (param->adv_data_raw_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+                Serial.printf("RID: BLE raw adv config failed: %d\n",
+                              (int)param->adv_data_raw_cmpl.status);
+                _bleAdvStartPending = false;
+                break;
+            }
+            if (_bleAdvStartPending && _ridRunning && !_bleAdvRunning) {
+                esp_ble_adv_params_t adv_params = {};
+                adv_params.adv_int_min = 0x20;  // 20ms
+                adv_params.adv_int_max = 0x40;  // 40ms
+                adv_params.adv_type = ADV_TYPE_NONCONN_IND;
+                adv_params.own_addr_type = BLE_ADDR_TYPE_RANDOM;
+                adv_params.channel_map = ADV_CHNL_ALL;
+                if (esp_ble_gap_start_advertising(&adv_params) != ESP_OK) {
+                    Serial.println("RID: BLE adv start request failed");
+                }
+            }
+            _bleAdvStartPending = false;
+            break;
+        case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
+            if (param->adv_start_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+                Serial.printf("RID: BLE adv start failed: %d\n",
+                              (int)param->adv_start_cmpl.status);
+                _bleAdvRunning = false;
+            } else {
+                _bleAdvRunning = true;
+            }
+            break;
+        case ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT:
+            if (param->adv_stop_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+                Serial.printf("RID: BLE adv stop failed: %d\n",
+                              (int)param->adv_stop_cmpl.status);
+            }
+            _bleAdvRunning = false;
+            break;
+        default:
+            break;
+    }
+}
+
+static void buildBleRotatingMsg(uint8_t *buf) {
+    const uint8_t slot = _bleRotation % 6;
+    _bleRotation = (_bleRotation + 1) % 6;
+    if (slot < 3) {
+        buildLocationMsg(buf);
+    } else if (slot == 3) {
+        buildBasicIdMsg(buf);
+    } else if (slot == 4) {
+        buildSystemMsg(buf);
+    } else {
+        buildOperatorIdMsg(buf);
+    }
+}
+
+static uint8_t nextBleAdCounter(const uint8_t *msg) {
+    const uint8_t typeNibble = (uint8_t)(msg[0] >> 4);
+    const uint8_t idx = (typeNibble < 6) ? typeNibble : 0;
+    const uint8_t counter = _bleAdCounters[idx] & 0x0F;
+    _bleAdCounters[idx] = (_bleAdCounters[idx] + 1) & 0x0F;
+    return counter;
 }
 
 static void bleInit() {
@@ -315,10 +378,7 @@ static void bleInit() {
 static void bleTransmitOdid() {
     if (!_bleReady) return;
 
-    // Stop any current advertising before updating data
-    esp_ble_gap_stop_advertising();
-
-    // Build BLE advertising data with ODID Basic ID
+    // Build BLE advertising data with a rotating ASTM F3411 ODID message.
     // BLE ODID format: AD struct with type 0x16 (Service Data)
     // Service UUID for ODID: 0xFFFA (ASTM)
     size_t pos = 0;
@@ -335,52 +395,22 @@ static void bleTransmitOdid() {
     _bleAdvData[pos++] = 0x16;            // type: Service Data - 16-bit UUID
     _bleAdvData[pos++] = 0xFA;            // UUID low byte (0xFFFA)
     _bleAdvData[pos++] = 0xFF;            // UUID high byte
-    // AD counter byte per ASTM F3411-22a §5.4.6.4: upper nibble = application
-    // code (0x0 for ODID), lower nibble = message counter (0-15, wraps).
-    // Compliant receivers use this to deduplicate repeated advertisements.
-    static uint8_t bleLocationCounter = 0;
-    static uint8_t bleBasicIdCounter  = 0;
-
-    // Location 3:1 weighting per droneRemoteIDSpoofer reference: slots
-    // 0,1,2 = Location, slot 3 = Basic ID, then repeat.
-    static uint8_t bleRotation = 0;
-    bool sendLocation = (bleRotation % 4) != 3;
-    bleRotation = (bleRotation + 1) % 4;
-
-    uint8_t msgCounter;
-    if (sendLocation) {
-        msgCounter = bleLocationCounter & 0x0F;
-        bleLocationCounter = (bleLocationCounter + 1) & 0x0F;
-    } else {
-        msgCounter = bleBasicIdCounter & 0x0F;
-        bleBasicIdCounter = (bleBasicIdCounter + 1) & 0x0F;
-    }
-    _bleAdvData[pos++] = (0x00 << 4) | msgCounter;  // app_code=0 | counter
-
     // Build the full 25-byte ODID message into a stack temp (the build
     // functions memset ODID_MSG_SIZE bytes and will overflow _bleAdvData
     // if given &_bleAdvData[pos] directly), then copy the first 23 bytes.
     uint8_t tempMsg[ODID_MSG_SIZE];
-    if (sendLocation) {
-        buildLocationMsg(tempMsg);
-    } else {
-        buildBasicIdMsg(tempMsg);
-    }
+    buildBleRotatingMsg(tempMsg);
+    _bleAdvData[pos++] = nextBleAdCounter(tempMsg);  // app_code=0 | counter
     memcpy(&_bleAdvData[pos], tempMsg, BLE4_ODID_MSG_SIZE);
     pos += BLE4_ODID_MSG_SIZE;
 
-    esp_ble_gap_config_adv_data_raw(_bleAdvData, pos);
-
-    // Start advertising with fast interval
-    esp_ble_adv_params_t adv_params = {};
-    adv_params.adv_int_min = 0x20;  // 20ms
-    adv_params.adv_int_max = 0x40;  // 40ms
-    adv_params.adv_type = ADV_TYPE_NONCONN_IND;  // non-connectable
-    adv_params.own_addr_type = BLE_ADDR_TYPE_RANDOM;
-    adv_params.channel_map = ADV_CHNL_ALL;
-
-    esp_ble_gap_start_advertising(&adv_params);
-    _bleCount++;
+    if (!_bleAdvRunning) _bleAdvStartPending = true;
+    if (esp_ble_gap_config_adv_data_raw(_bleAdvData, pos) == ESP_OK) {
+        _bleCount++;
+    } else {
+        _bleAdvStartPending = false;
+        Serial.println("RID: BLE raw adv config request failed");
+    }
 }
 
 // ============================================================
@@ -422,6 +452,10 @@ void ridStart() {
 
     _wifiCount = 0;
     _bleCount = 0;
+    memset(_bleAdCounters, 0, sizeof(_bleAdCounters));
+    _bleRotation = 0;
+    _bleAdvRunning = false;
+    _bleAdvStartPending = false;
     _ridRunning = true;
     _lastTxMs = millis();
 
@@ -432,10 +466,12 @@ void ridStart() {
 
 void ridStop() {
     _ridRunning = false;
+    _bleAdvStartPending = false;
 
-    if (_bleReady) {
+    if (_bleReady && _bleAdvRunning) {
         esp_ble_gap_stop_advertising();
     }
+    _bleAdvRunning = false;
 
     Serial.printf("RID: Stopped — %lu WiFi beacons, %lu BLE adverts\n",
                   (unsigned long)_wifiCount, (unsigned long)_bleCount);
@@ -451,7 +487,7 @@ void ridUpdate() {
     // Transmit WiFi beacon with all 4 ODID messages in a message pack
     wifiTransmitBeacon();
 
-    // Transmit BLE advertisement (alternates Basic ID / Location)
+    // Transmit BLE advertisement (Location x3, then Basic/System/Operator)
     bleTransmitOdid();
 }
 

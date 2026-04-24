@@ -43,6 +43,12 @@ static uint8_t  s_hopCount      = 0;
 static uint8_t  s_hopIdx        = 0;
 static uint16_t s_hopDwellMs    = 0;
 static uint32_t s_hopNextMs     = 0;
+static uint32_t s_hopPktIntervalUs = 0;
+static uint32_t s_hopNextPktUs     = 0;
+static uint8_t  s_hopPktsPerHop    = 0;
+static uint8_t  s_hopPktsSent      = 0;
+static uint8_t  s_hopPayloadLen    = 0;
+static uint8_t  s_hopSeq           = 0;
 
 // ----- response helpers -----------------------------------------------------
 static inline void respondOk()            { Serial.println("OK"); }
@@ -75,6 +81,10 @@ static int decodeHex(const char *hex, uint8_t *out, size_t outMax) {
 static void cancelRepeatAndHop() {
     s_txRptActive = false;
     s_hopActive   = false;
+    s_hopPktIntervalUs = 0;
+    s_hopPktsPerHop    = 0;
+    s_hopPayloadLen    = 0;
+    s_hopPktsSent      = 0;
 }
 
 // ----- per-command handlers ------------------------------------------------
@@ -88,11 +98,32 @@ static void cmdFreq(char *args) {
 }
 
 static void cmdLoRa(char *args) {
-    unsigned sf, cr;
+    // Format: LORA <sf> <bw> <cr> [<preamble> <implicit> [<len>]]
+    //   preamble — uint16 symbol count (default left at XR1's 8)
+    //   implicit — 0 = explicit header (default), 1 = implicit header
+    //   len      — fixed payload length for implicit-header modes
+    unsigned sf, cr, preamble = 0, implicit = 0, implicitLen = 0;
     float    bw;
-    if (sscanf(args, "%u %f %u", &sf, &bw, &cr) != 3) { respondErrStr("PARSE"); return; }
+    int n = sscanf(args, "%u %f %u %u %u %u",
+                   &sf, &bw, &cr, &preamble, &implicit, &implicitLen);
+    if (n < 3) { respondErrStr("PARSE"); return; }
+
     int16_t rc = xr1RadioSetLoRa((uint8_t)sf, bw, (uint8_t)cr);
-    if (rc == RADIOLIB_ERR_NONE) respondOk(); else respondErrCode(rc);
+    if (rc != RADIOLIB_ERR_NONE) { respondErrCode(rc); return; }
+
+    if (n >= 4 && preamble > 0) {
+        rc = xr1RadioSetPreamble((uint16_t)preamble);
+        if (rc != RADIOLIB_ERR_NONE) { respondErrCode(rc); return; }
+    }
+    if (n >= 5) {
+        const uint8_t payloadLen = (n >= 6 && implicitLen > 0)
+                                 ? (uint8_t)implicitLen
+                                 : 8;
+        rc = implicit ? xr1RadioSetImplicitHeader(payloadLen)
+                      : xr1RadioSetExplicitHeader();
+        if (rc != RADIOLIB_ERR_NONE) { respondErrCode(rc); return; }
+    }
+    respondOk();
 }
 
 static void cmdFsk(char *args) {
@@ -137,23 +168,44 @@ static void cmdTxRpt(char *args) {
 }
 
 static void cmdHop(char *args) {
-    // args: "f1,f2,f3,... <dwell_ms>"
-    char *space = strrchr(args, ' ');
-    if (!space) { respondErrStr("PARSE"); return; }
-    *space = '\0';
-    char *chanList = args;
-    char *dwellStr = space + 1;
+    // args: "f1,f2,f3,... <dwell_ms> [<pkt_interval_us> <pkts_per_hop> <payload_len>]"
+    char *parts[5] = {};
+    int argc = 0;
+    char *save = nullptr;
+    for (char *tok = strtok_r(args, " ", &save);
+         tok && argc < 5;
+         tok = strtok_r(nullptr, " ", &save)) {
+        parts[argc++] = tok;
+    }
+    if (argc != 2 && argc != 5) { respondErrStr("PARSE"); return; }
 
-    unsigned dwell;
-    if (sscanf(dwellStr, "%u", &dwell) != 1 || dwell == 0) { respondErrStr("PARSE"); return; }
+    unsigned dwell = 0;
+    unsigned pktIntervalUs = 0;
+    unsigned pktsPerHop = 0;
+    unsigned payloadLen = 0;
+    if (sscanf(parts[1], "%u", &dwell) != 1 || dwell == 0) {
+        respondErrStr("PARSE");
+        return;
+    }
+    if (argc == 5) {
+        if (sscanf(parts[2], "%u", &pktIntervalUs) != 1
+         || sscanf(parts[3], "%u", &pktsPerHop) != 1
+         || sscanf(parts[4], "%u", &payloadLen) != 1
+         || pktIntervalUs == 0 || pktsPerHop == 0
+         || payloadLen == 0 || payloadLen > XR1_PAYLOAD_MAX) {
+            respondErrStr("PARSE");
+            return;
+        }
+    }
 
     uint8_t count = 0;
-    char *tok = strtok(chanList, ",");
+    char *chanSave = nullptr;
+    char *tok = strtok_r(parts[0], ",", &chanSave);
     while (tok && count < XR1_HOP_MAX_CH) {
         float f;
         if (sscanf(tok, "%f", &f) != 1) { respondErrStr("PARSE"); return; }
         s_hopChannels[count++] = f;
-        tok = strtok(nullptr, ",");
+        tok = strtok_r(nullptr, ",", &chanSave);
     }
     if (count == 0) { respondErrStr("PARSE"); return; }
 
@@ -161,6 +213,13 @@ static void cmdHop(char *args) {
     s_hopIdx     = 0;
     s_hopDwellMs = (uint16_t)dwell;
     s_hopNextMs  = millis();
+    s_hopPktIntervalUs = (uint32_t)pktIntervalUs;
+    s_hopPktsPerHop    = (uint8_t)pktsPerHop;
+    s_hopPayloadLen    = (uint8_t)payloadLen;
+    s_hopPktsSent      = 0;
+    s_hopSeq           = 0;
+    s_hopNextPktUs     = micros();
+    xr1RadioSetFrequency(s_hopChannels[0]);
     s_hopActive  = true;
     respondOk();
 }
@@ -344,6 +403,32 @@ static void tickTxRpt(uint32_t now) {
 
 static void tickHop(uint32_t now) {
     if (!s_hopActive)                   return;
+    if (s_hopPktIntervalUs > 0 && s_hopPktsPerHop > 0 && s_hopPayloadLen > 0) {
+        static const uint8_t kHopTemplate[13] = {
+            0xE1, 0x25, 0x00, 0x00, 0x05, 0x7A, 0x3C,
+            0xAA, 0x42, 0x19, 0x9C, 0x55, 0x00
+        };
+        const uint32_t nowUs = micros();
+        uint8_t burstBudget = 4;
+        while (burstBudget-- > 0 && (int32_t)(nowUs - s_hopNextPktUs) >= 0) {
+            uint8_t payload[XR1_PAYLOAD_MAX];
+            for (uint8_t i = 0; i < s_hopPayloadLen; ++i) {
+                payload[i] = kHopTemplate[i % sizeof(kHopTemplate)];
+            }
+            payload[s_hopPayloadLen - 1] = s_hopSeq++;
+            if (s_hopPayloadLen > 1) payload[s_hopPayloadLen - 2] = s_hopIdx;
+            xr1RadioTransmit(payload, s_hopPayloadLen);
+
+            ++s_hopPktsSent;
+            if (s_hopPktsSent >= s_hopPktsPerHop) {
+                s_hopPktsSent = 0;
+                s_hopIdx = (uint8_t)((s_hopIdx + 1) % s_hopCount);
+                xr1RadioSetFrequency(s_hopChannels[s_hopIdx]);
+            }
+            s_hopNextPktUs += s_hopPktIntervalUs;
+        }
+        return;
+    }
     if ((int32_t)(now - s_hopNextMs) < 0) return;
 
     xr1RadioSetFrequency(s_hopChannels[s_hopIdx]);
@@ -396,4 +481,8 @@ void xr1UartUpdate() {
     const uint32_t now = millis();
     tickTxRpt(now);
     tickHop(now);
+}
+
+bool xr1UartNeedsFastLoop() {
+    return s_hopActive || s_txRptActive;
 }

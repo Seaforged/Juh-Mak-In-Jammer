@@ -47,16 +47,18 @@ bool combinedScenarioRacing() {
     elrsSetDomain(ELRS_DOMAIN_FCC915);
     if (!elrsStart())                                   return false;
     if (!xr1ModeElrs2g4Start(0))                       { elrsStop(); return false; }
-    xr1RidStart(XR1_RID_WIFI | XR1_RID_BLE);   // best-effort
+    const bool ridOk = xr1RidStart(XR1_RID_WIFI | XR1_RID_BLE);
+    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed — running without RID");
 
     s_status = { COMBINED_RACING, "Racing Drone",
-                 true, true, true, true, false,
+                 true, true,
+                 ridOk, ridOk, false,
                  "ELRS 200Hz", "ELRS 2.4G 500Hz" };
     printBanner("Racing Drone",
                 "ELRS-FCC915 40ch SF6/BW500 200Hz implicit 0x12 | 10 dBm",
-                "ELRS-ISM2G4 80ch SF6/BW812.5 500Hz | 12 dBm",
+                "ELRS-ISM2G4 80ch SF5/BW812.5 CR4-6 pre12 implicit 500Hz | 12 dBm",
                 "ODID beacon ch1/6/11 1Hz | Serial: " "JJ-XR1-TEST-001",
-                "ODID Legacy ADV 3:1 Location | UUID 0xFFFA");
+                "ODID Legacy ADV 6-slot LLLBSO | UUID 0xFFFA");
     return true;
 }
 
@@ -64,16 +66,18 @@ bool combinedScenarioDji() {
     combinedScenarioStop();
     // No sub-GHz emitter in DJI scenarios — DJI control is 2.4 GHz only.
     if (!xr1ModeDjiEnergyStart())                       return false;
-    xr1RidStart(XR1_RID_DJI | XR1_RID_BLE);
+    const bool ridOk = xr1RidStart(XR1_RID_DJI | XR1_RID_BLE);
+    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed — running without RID");
 
     s_status = { COMBINED_DJI, "DJI Consumer",
-                 false, true, false, true, true,
+                 false, true,
+                 false, ridOk, ridOk,
                  "idle", "DJI energy" };
     printBanner("DJI Consumer",
                 nullptr,
                 "DJI-energy GFSK 250k/50k 20ch 2400.5-2481.5MHz dwell 50ms | 12 dBm",
                 "DJI DroneID OUI 26:37:12 200ms ch1/6/11 | Serial: " "JJ-XR1-TEST-001",
-                "ODID Legacy ADV 3:1 Location | UUID 0xFFFA");
+                "ODID Legacy ADV 6-slot LLLBSO | UUID 0xFFFA");
     Serial.println("  NOTE: real DJI video is OFDM; LR1121 GFSK is energy approximation only");
     return true;
 }
@@ -81,16 +85,17 @@ bool combinedScenarioDji() {
 bool combinedScenarioLongRange() {
     combinedScenarioStop();
     crossfireStart();   // Crossfire FSK 150 Hz @ 915
-    xr1RidStart(XR1_RID_WIFI | XR1_RID_BLE);
+    const bool ridOk = xr1RidStart(XR1_RID_WIFI | XR1_RID_BLE);
+    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed — running without RID");
 
     s_status = { COMBINED_LONGRANGE, "Long Range FPV",
-                 true, false, true, true, false,
+                 true, false, ridOk, ridOk, false,
                  "CRSF 915 FSK", "idle" };
     printBanner("Long Range FPV",
                 "Crossfire-915 FSK 85kbps ~150Hz | 10 dBm",
                 nullptr,
                 "ODID beacon ch1/6/11 1Hz | Serial: " "JJ-XR1-TEST-001",
-                "ODID Legacy ADV 3:1 Location | UUID 0xFFFA");
+                "ODID Legacy ADV 6-slot LLLBSO | UUID 0xFFFA");
     return true;
 }
 
@@ -106,7 +111,7 @@ bool combinedScenarioDualBand() {
                  "ELRS 200Hz", "ELRS 2.4G 500Hz" };
     printBanner("Dual-Band ELRS",
                 "ELRS-FCC915 40ch SF6/BW500 200Hz implicit 0x12 | 10 dBm",
-                "ELRS-ISM2G4 80ch SF6/BW812.5 500Hz | 12 dBm",
+                "ELRS-ISM2G4 80ch SF5/BW812.5 CR4-6 pre12 implicit 500Hz | 12 dBm",
                 nullptr,
                 nullptr);
     return true;
@@ -118,16 +123,17 @@ bool combinedScenarioEverything() {
     elrsSetDomain(ELRS_DOMAIN_FCC915);
     if (!elrsStart())                                   return false;
     if (!xr1ModeElrs2g4Start(0))                       { elrsStop(); return false; }
-    xr1RidStart(XR1_RID_ALL);    // WiFi ODID + BLE ODID + DJI DroneID
+    const bool ridOk = xr1RidStart(XR1_RID_ALL);    // WiFi ODID + BLE ODID + DJI DroneID
+    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed — running without RID");
 
     s_status = { COMBINED_EVERYTHING, "Everything",
-                 true, true, true, true, true,
+                 true, true, ridOk, ridOk, ridOk,
                  "ELRS 200Hz", "ELRS 2.4G 500Hz" };
     printBanner("Everything",
                 "ELRS-FCC915 40ch SF6/BW500 200Hz implicit 0x12 | 10 dBm",
-                "ELRS-ISM2G4 80ch SF6/BW812.5 500Hz | 12 dBm",
-                "ODID beacon + DJI DroneID ch1/6/11 | Serial: " "JJ-XR1-TEST-001",
-                "ODID Legacy ADV 3:1 Location | UUID 0xFFFA");
+                "ELRS-ISM2G4 80ch SF5/BW812.5 500Hz CR4-6 pre12 implicit | 12 dBm",
+                "ODID beacon 1Hz + DJI DroneID 5Hz ch1/6/11 | Serial: " "JJ-XR1-TEST-001",
+                "ODID Legacy ADV 6-slot LLLBSO | UUID 0xFFFA");
     return true;
 }
 

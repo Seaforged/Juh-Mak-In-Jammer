@@ -167,7 +167,15 @@ T_packet = T_preamble + T_payload
 ```
 Where DE = 1 for SF11/SF12 at BW125 (low data rate optimization), 0 otherwise.
 
-**Calculated ToA for ELRS modes (BW500, preamble 6, implicit header, CR 4/7):**
+**Reference note:** the historical table below is stale for current ELRS 2.4 GHz upstream. Current ExpressLRS 2.4 GHz LoRa rates use BW800/812.5 with:
+- 500 Hz: SF5, CR 4/6, preamble 12, OTA4 payload length 8
+- 250 Hz: SF6, CR 4/8, preamble 14, OTA4 payload length 8
+- 150 Hz: SF7, CR 4/8, preamble 12, OTA4 payload length 8
+- 50 Hz: SF8, CR 4/8, preamble 12, OTA4 payload length 8
+
+Use upstream `ExpressLRS/src/src/common.cpp` as the air-rate ground truth. The table below should not be used for new ELRS 2.4 work until it is recomputed from the upstream parameters.
+
+**Historical ToA table (retain for context only):**
 
 | Mode | SF | Payload | T_symbol (µs) | T_preamble (ms) | T_packet (ms) | Packet Interval (ms) | Dead Time (ms) |
 |---|---|---|---|---|---|---|---|

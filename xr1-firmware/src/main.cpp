@@ -29,6 +29,11 @@ static void printBanner() {
 }
 
 void setup() {
+    // 1 KB RX buffer ensures the 80-channel HOP command line (~725 bytes)
+    // from the T3S3 fits in one read without losing bytes if we momentarily
+    // fall behind (e.g. during WiFi/BLE stack init). Must be called before
+    // Serial.begin().
+    Serial.setRxBufferSize(1024);
     Serial.begin(115200);
     // Give the USB-CDC host a moment to attach before we dump the banner.
     // On cold boot the first few serial lines are often lost otherwise.
@@ -66,7 +71,9 @@ void loop() {
     xr1UartUpdate();
     remoteIdUpdate();
     xr1LedUpdate();
-    // 20 Hz LED refresh is plenty smooth for the blink patterns we render and
-    // doesn't starve the UART parser — xr1UartUpdate is itself non-blocking.
-    delay(50);
+    // Tight FHSS modes like ELRS 2.4 need the main loop to spin quickly enough
+    // to honor sub-10 ms packet timers. When idle we still sleep to keep the
+    // C3 cool and quiet.
+    if (xr1UartNeedsFastLoop()) delay(0);
+    else                        delay(20);
 }

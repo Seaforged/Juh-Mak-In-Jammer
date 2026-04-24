@@ -48,19 +48,25 @@ void remoteIdInit() {
 // call overwrote the other's — beacons sometimes went out on the "wrong"
 // channel for their module. Phase 6 arch review H1 called this out.
 //
-// Fix: one channel controller owned here. Rotates every 2 s (the faster of
-// the two original rates; slower would hurt DJI coverage) whenever any WiFi
-// transport is active. Individual transports just transmit on whatever
-// channel is currently set — they no longer touch esp_wifi_set_channel.
-static constexpr uint8_t WIFI_RID_CHANS[]   = { 1, 6, 11 };
-static constexpr uint32_t WIFI_CHAN_DWELL_MS = 2000;
+// Fix: one channel controller owned here. ASTM ODID keeps its older 3 s dwell
+// when running alone, but as soon as DJI is active we tighten to 200 ms so the
+// shared WiFi radio matches the intended DroneID cadence without races.
+static constexpr uint8_t WIFI_RID_CHANS[]    = { 1, 6, 11 };
+static constexpr uint32_t WIFI_ODID_DWELL_MS = 3000;
+static constexpr uint32_t WIFI_DJI_DWELL_MS  = 200;
+
+static uint32_t currentWifiChanDwellMs() {
+    if (g_ridStatus.djiActive)  return WIFI_DJI_DWELL_MS;
+    if (g_ridStatus.wifiActive) return WIFI_ODID_DWELL_MS;
+    return 0;
+}
 
 static uint32_t s_wifiChanLastMs = 0;
 static uint8_t  s_wifiChanIdx    = 0;
 
 static void ridWifiChanTick(uint32_t now) {
-    const bool anyWifiTx = g_ridStatus.wifiActive || g_ridStatus.djiActive;
-    if (!anyWifiTx) {
+    const uint32_t dwellMs = currentWifiChanDwellMs();
+    if (dwellMs == 0) {
         // Reset state so the next session starts on channel 1 immediately.
         s_wifiChanLastMs = 0;
         s_wifiChanIdx    = 0;
@@ -74,7 +80,7 @@ static void ridWifiChanTick(uint32_t now) {
         s_wifiChanLastMs = now;
         return;
     }
-    if (now - s_wifiChanLastMs < WIFI_CHAN_DWELL_MS) return;
+    if (now - s_wifiChanLastMs < dwellMs) return;
     s_wifiChanIdx = (uint8_t)((s_wifiChanIdx + 1) % (sizeof(WIFI_RID_CHANS) / sizeof(WIFI_RID_CHANS[0])));
     esp_wifi_set_channel(WIFI_RID_CHANS[s_wifiChanIdx], WIFI_SECOND_CHAN_NONE);
     s_wifiChanLastMs = now;

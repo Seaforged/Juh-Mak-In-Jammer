@@ -163,7 +163,7 @@ void mlrsStart() {
     uint32_t frameUs = 1000000UL / mode.rateHz;
     float effectiveHopsPerSec = mode.rateHz / 2.0f;
     uint32_t dwellMs = (2 * frameUs) / 1000;  // TX + RX frame before hop
-    Serial.printf("[mLRS-915] %uch %.0f-%.0fMHz %s %uHz symmetric\n",
+    Serial.printf("[mLRS-915] %uch %.0f-%.0fMHz %s %uHz symmetric [FOOTPRINT]\n",
                   MLRS_NUM_CHANNELS, MLRS_BAND_START, MLRS_BAND_END,
                   mode.isLoRa ? "LoRa" : "FSK", mode.rateHz);
     if (mode.isLoRa) {

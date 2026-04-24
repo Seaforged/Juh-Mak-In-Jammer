@@ -56,12 +56,12 @@ static void printHelp() {
     Serial.printf("=== %s v%s — Drone Signal Emulator ===\n\n", JAMMER_NAME, JAMMER_VERSION);
 
     Serial.println("DRONE PROTOCOLS:");
-    Serial.println("  e  ELRS FHSS      e1-e6=rate  f/a/u/i=domain  b=binding");
-    Serial.println("  g  Crossfire      g/g9=915 g8=868 gl=LoRa50Hz");
-    Serial.println("  k  SiK Radio      k1=64k  k2=125k  k3=250k");
-    Serial.println("  l  mLRS           l1=19Hz  l2=31Hz  l3=50Hz(FSK)");
+    Serial.println("  e  ELRS RF profile e1-e6=rate  f/a/u/i=domain  b=binding");
+    Serial.println("  g  Crossfire footprint g/g9=915 g8=868 gl=LoRa50Hz");
+    Serial.println("  k  SiK footprint  k1=64k  k2=125k  k3=250k");
+    Serial.println("  l  mLRS footprint l1=19Hz  l2=31Hz  l3=50Hz(FSK)");
     Serial.println("  u  Custom LoRa    u?=settings  uf/us/ub/ur/uh/up/uw=config");
-    Serial.println("  x1-x4 ELRS 2.4G   500/250/150/50Hz via XR1");
+    Serial.println("  x1-x4 ELRS 2.4G RF 500/250/150/50Hz via XR1");
     Serial.println("  x5 Ghost 2.4G     approximate (proprietary)");
     Serial.println("  x6 FrSky D16 2.4G GFSK 250k/50k footprint");
     Serial.println("  x7 FlySky 2A 2.4G GFSK 250k/50k [APPROX]");
@@ -199,6 +199,43 @@ static void stopCurrentMode() {
     if (st == STATE_XR1_ACTIVE)      xr1ModesStop();
     if (st == STATE_XR1_RID_ACTIVE)  xr1RidStop();
     if (st == STATE_COMBINED_SCENARIO_ACTIVE) combinedScenarioStop();
+}
+
+static bool xr1HealthRequired(AppState st) {
+    return st == STATE_XR1_ACTIVE
+        || st == STATE_XR1_RID_ACTIVE
+        || st == STATE_COMBINED_SCENARIO_ACTIVE;
+}
+
+static void xr1HealthTick() {
+    static uint32_t lastCheckMs = 0;
+    static uint8_t missCount = 0;
+
+    AppState st = menuGetState();
+    if (!xr1HealthRequired(st)) {
+        lastCheckMs = 0;
+        missCount = 0;
+        return;
+    }
+
+    const uint32_t now = millis();
+    if (lastCheckMs != 0 && (now - lastCheckMs) < 10000) return;
+    lastCheckMs = now;
+
+    if (xr1PingWithTimeout(750)) {
+        missCount = 0;
+        return;
+    }
+
+    missCount++;
+    Serial.printf("[XR1] health check miss %u/3\n", (unsigned)missCount);
+    if (missCount < 3) return;
+
+    Serial.println("[XR1] unresponsive during active session â€” stopping active mode");
+    stopCurrentMode();
+    menuSetState(STATE_MAIN_MENU);
+    lastCheckMs = 0;
+    missCount = 0;
 }
 
 // --- Serial command parser ---
@@ -654,6 +691,10 @@ void loop() {
 
     // Process serial commands for runtime parameter control
     handleSerialCommands();
+
+    // Poll XR1 liveness during active XR1-backed sessions so a reset or crash
+    // does not leave the UI claiming the secondary emitter is still running.
+    xr1HealthTick();
 
     // Heartbeat blink: slow when idle, fast when transmitting
     static unsigned long lastBlink = 0;

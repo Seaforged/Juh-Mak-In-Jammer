@@ -8,12 +8,14 @@
 // Command set (see docs/3.md for the authoritative protocol):
 //   PING                          -> OK
 //   FREQ <MHz>                    -> OK | ERR <code>
-//   LORA <SF> <BW_kHz> <CR>       -> OK | ERR <code>
+//   LORA <SF> <BW_kHz> <CR> [<preamble> <implicit> [<len>]]
+//                                -> OK | ERR <code>
 //   FSK  <BR_kbps> <DEV_kHz>      -> OK | ERR <code>
 //   PWR  <dBm>                    -> OK | ERR <code>
 //   TX   <hex_payload>            -> OK | ERR <code>
 //   TXRPT <interval_ms> <count>   -> OK  (then DONE when complete)
-//   HOP   <ch1,ch2,...> <dwell>   -> OK  (runs until STOP)
+//   HOP   <ch1,ch2,...> <dwell> [<pkt_us> <pkts_per_hop> <payload_len>]
+//                                -> OK  (runs until STOP)
 //   STOP                          -> OK
 //   STATUS                        -> OK <freq> <mod> <pwr> <state>
 //   RESET                         -> OK  (then radio re-inits)
@@ -25,3 +27,7 @@ void xr1UartInit();
 // Called from loop() every iteration. Non-blocking: reads any available bytes,
 // runs line dispatch on newline, and advances the TXRPT / HOP state machines.
 void xr1UartUpdate();
+
+// True when the loop should avoid long sleeps because a high-rate TX state
+// machine is running (ELRS-style hopping or tight TXRPT intervals).
+bool xr1UartNeedsFastLoop();

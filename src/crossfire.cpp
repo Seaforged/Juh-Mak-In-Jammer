@@ -103,7 +103,7 @@ void crossfireStart() {
     _radio->transmit(CRSF_PAYLOAD, sizeof(CRSF_PAYLOAD));
     _crsfPacketCount++;
 
-    Serial.printf("[CRSF-%s] %uch %.0f-%.0fMHz FSK %.1fkbps %uHz %d dBm\n",
+    Serial.printf("[CRSF-%s] %uch %.0f-%.0fMHz FSK %.1fkbps %uHz %d dBm [FOOTPRINT]\n",
                   band.name, band.channels,
                   band.freqStartMHz, band.freqStopMHz,
                   CRSF_FSK_BITRATE_KBPS, CRSF_FSK_RATE_HZ, pwr);
@@ -155,7 +155,7 @@ void crossfireStartLoRa() {
     _radio->transmit(CRSF_PAYLOAD, sizeof(CRSF_PAYLOAD));
     _crsfPacketCount++;
 
-    Serial.printf("[CRSF-%s] %uch %.0f-%.0fMHz LoRa SF7/BW500 %uHz %d dBm [VERIFY SF/BW/CR]\n",
+    Serial.printf("[CRSF-%s] %uch %.0f-%.0fMHz LoRa SF7/BW500 %uHz %d dBm [FOOTPRINT, VERIFY SF/BW/CR]\n",
                   band.name, band.channels,
                   band.freqStartMHz, band.freqStopMHz,
                   CRSF_LORA_RATE_HZ, pwr);

@@ -71,12 +71,20 @@ struct Elrs2g4Rate {
     uint8_t     payloadLen;
     uint16_t    rateHz;
     uint8_t     hopInterval;  // packets per channel
+    uint32_t    pktIntervalUs;
 };
+// ExpressLRS upstream (src/src/common.cpp, SX1280/LR11xx 2.4 GHz table) uses:
+//   500Hz = SF5 CR4/6 preamble12 payload8 hop4 interval2000us
+//   250Hz = SF6 CR4/8 preamble14 payload8 hop4 interval4000us
+//   150Hz = SF7 CR4/8 preamble12 payload8 hop4 interval6666us
+//   50Hz  = SF8 CR4/8 preamble12 payload8 hop2 interval20000us
+// The local docs had drifted to SF6/7/8/9 + preamble 6; this table restores
+// the XR1 path to the actual 2.4 GHz ELRS LoRa profile family.
 static const Elrs2g4Rate ELRS_2G4_RATES[] = {
-    { "500Hz",  6, 7, 8,  8, 500, 4 },
-    { "250Hz",  7, 7, 8,  8, 250, 4 },
-    { "150Hz",  8, 7, 8, 10, 150, 4 },
-    { "50Hz",   9, 7, 8, 10,  50, 4 },
+    { "500Hz",  5, 6, 12, 8, 500, 4,  2000 },
+    { "250Hz",  6, 8, 14, 8, 250, 4,  4000 },
+    { "150Hz",  7, 8, 12, 8, 150, 4,  6666 },
+    { "50Hz",   8, 8, 12, 8,  50, 2, 20000 },
 };
 static constexpr uint8_t ELRS_2G4_RATE_COUNT =
     sizeof(ELRS_2G4_RATES) / sizeof(ELRS_2G4_RATES[0]);
@@ -107,16 +115,17 @@ bool xr1ModeElrs2g4Start(uint8_t rateIdx) {
     elrsBuildHopList(channels, ELRS2G4_CHANNELS, ELRS2G4_SYNC_CH, ELRS_HOP_SEED);
 
     // Dwell: hop_interval packets spent on each channel -> dwell_ms.
-    uint16_t dwellMs = (uint16_t)((r.hopInterval * 1000UL) / r.rateHz);
+    uint16_t dwellMs = (uint16_t)((r.pktIntervalUs * r.hopInterval + 999UL) / 1000UL);
     if (dwellMs == 0) dwellMs = 1;
 
     // Configure modulation first (LoRa on the start frequency), then hop.
     const float startFreq = channels[0];
     if (!xr1Stop())                                                 return false;
     if (!xr1SetFreq(startFreq))                                     return false;
-    if (!xr1SetLoRa(r.sf, 812.5f, r.cr))                            return false;
+    if (!xr1SetLoRaEx(r.sf, 812.5f, r.cr, r.preamble, true, r.payloadLen))    return false;
     if (!xr1SetPower(XR1_DEFAULT_PWR_DBM))                          return false;
-    if (!xr1StartHop(channels, ELRS2G4_CHANNELS, dwellMs))          return false;
+    if (!xr1StartHopEx(channels, ELRS2G4_CHANNELS, dwellMs,
+                       r.pktIntervalUs, r.hopInterval, r.payloadLen)) return false;
 
     clearStatus();
     s_status.running   = true;
@@ -129,10 +138,11 @@ bool xr1ModeElrs2g4Start(uint8_t rateIdx) {
     snprintf(s_status.label, sizeof(s_status.label),
              "ELRS-2G4 %s SF%u", r.label, (unsigned)r.sf);
 
-    Serial.printf("[XR1-MODE] ELRS-2G4 %s: SF%u/BW812.5/CR4-%u, %uch %.1f-%.1fMHz, dwell=%ums, pwr=%d dBm\n",
-                  r.label, (unsigned)r.sf, (unsigned)r.cr,
+    Serial.printf("[XR1-MODE] ELRS-2G4 %s: SF%u/BW812.5/CR4-%u preamble=%u implicit len=%u, %uch %.1f-%.1fMHz, dwell=%ums, hopEvery=%u, pwr=%d dBm\n",
+                  r.label, (unsigned)r.sf, (unsigned)r.cr, (unsigned)r.preamble,
+                  (unsigned)r.payloadLen,
                   (unsigned)ELRS2G4_CHANNELS, s_status.startMhz, s_status.stopMhz,
-                  (unsigned)dwellMs, (int)XR1_DEFAULT_PWR_DBM);
+                  (unsigned)dwellMs, (unsigned)r.hopInterval, (int)XR1_DEFAULT_PWR_DBM);
     return true;
 }
 

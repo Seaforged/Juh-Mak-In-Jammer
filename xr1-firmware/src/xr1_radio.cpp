@@ -256,6 +256,24 @@ int16_t xr1RadioTransmit(const uint8_t *data, size_t len) {
     return rc;
 }
 
+int16_t xr1RadioSetPreamble(uint16_t symbols) {
+    int16_t rc = s_radio.setPreambleLength(symbols);
+    if (rc != RADIOLIB_ERR_NONE) s_status.lastError = rc;
+    return rc;
+}
+
+int16_t xr1RadioSetImplicitHeader(uint8_t payloadLen) {
+    int16_t rc = s_radio.implicitHeader(payloadLen);
+    if (rc != RADIOLIB_ERR_NONE) s_status.lastError = rc;
+    return rc;
+}
+
+int16_t xr1RadioSetExplicitHeader() {
+    int16_t rc = s_radio.explicitHeader();
+    if (rc != RADIOLIB_ERR_NONE) s_status.lastError = rc;
+    return rc;
+}
+
 int16_t xr1RadioReset() {
     pulseReset();
     waitBusyLow(200);

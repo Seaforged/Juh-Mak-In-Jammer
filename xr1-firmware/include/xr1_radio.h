@@ -59,6 +59,13 @@ int16_t xr1RadioSetFSK(float bitrateKbps, float devKhz);
 int16_t xr1RadioSetPower(int8_t dbm);
 int16_t xr1RadioTransmit(const uint8_t *data, size_t len);
 
+// LoRa header / preamble knobs for protocols like ELRS that need implicit
+// headers and short preambles. Call after xr1RadioSetLoRa to override the
+// defaults set by loraBegin (preamble=8, explicit header).
+int16_t xr1RadioSetPreamble(uint16_t symbols);
+int16_t xr1RadioSetImplicitHeader(uint8_t payloadLen);
+int16_t xr1RadioSetExplicitHeader();
+
 // Hardware-reset the LR1121 and re-init at the currently configured settings.
 // Returns 0 on success, RadioLib error code otherwise.
 int16_t xr1RadioReset();

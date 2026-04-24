@@ -55,7 +55,9 @@ static bool sendRidCmd(const char *cmd, uint32_t timeoutMs = 2000) {
     const uint32_t deadline = millis() + timeoutMs;
     char line[160];
     while (millis() < deadline) {
-        if (!readLineWithTimeout(line, sizeof(line), (uint32_t)(deadline - millis()))) {
+        const uint32_t now = millis();
+        if (now >= deadline) break;
+        if (!readLineWithTimeout(line, sizeof(line), (uint32_t)(deadline - now))) {
             break;
         }
         if (strncmp(line, "OK",  2) == 0) return true;

@@ -178,12 +178,13 @@ Add `x` command to JJ serial menu → XR1 submenu with numbered protocol selecti
 
 **Channel plan:** 80 channels, 2400.4–2479.4 MHz, 1 MHz spacing  
 **Packet rates:** 25/50/100/150/250/500 Hz (LoRa), F500/F1000 (FSK), K1000 (FSK+FEC)  
-**LoRa config per rate:**
-- 500 Hz: SF6/BW500
-- 250 Hz: SF7/BW500
-- 150 Hz: SF8/BW500
-- 50 Hz: SF9/BW500
-- 25 Hz: SF10/BW500
+**LoRa config per rate (current upstream ExpressLRS 2.4 GHz table):**
+- 500 Hz: SF5/BW800(812.5), CR 4/6, preamble 12, implicit header, OTA4 payload
+- 250 Hz: SF6/BW800(812.5), CR 4/8, preamble 14, implicit header, OTA4 payload
+- 150 Hz: SF7/BW800(812.5), CR 4/8, preamble 12, implicit header, OTA4 payload
+- 50 Hz: SF8/BW800(812.5), CR 4/8, preamble 12, implicit header, OTA4 payload
+
+**Status note:** current JJ code matches this RF-rate table on the XR1 path, but exact ELRS OTA serialization and sync/telemetry behavior are still pending. Treat ELRS modes as RF-profile emulation unless a future SDR regression harness proves packet-level conformance.
 
 **FSK config (K1000):** GFSK 250 kbps  
 **Hopping:** Pseudo-random sequence, sync channel 40, hop timing matches sub-GHz patterns  
