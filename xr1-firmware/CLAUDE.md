@@ -58,13 +58,14 @@ See `docs/JJ_XR1_Phased_Development_Plan.md` for the full 6-phase plan.
 
 | Phase | Status | Files |
 |---|---|---|
-| 0 — Wiring + ELRS backup | user task | — |
-| 1 — Hello Hardware | **in progress** | `main.cpp`, `xr1_radio.cpp` |
-| 2 — UART command protocol | stub | `xr1_commands.cpp` |
-| 3 — Protocol profiles + FHSS | stub | `rf_profiles.cpp`, `fhss_engine.cpp` |
-| 4 — Remote ID (WiFi + BLE + DJI) | stub | `remote_id_*.cpp`, `dji_droneid.cpp` |
-| 5 — Combined scenarios | T3S3 side | — |
-| 6 — Polish + validation | — | — |
+| 0 — Wiring + ELRS backup | done | — |
+| 1 — Hello Hardware (self-test two bands) | done | `main.cpp`, `xr1_radio.cpp` |
+| 2 — UART command protocol | done | `xr1_uart.cpp`, `xr1_radio.cpp` (operational setters) |
+| 3 — WS2812 LED + T3S3 driver | done (T3S3 side) | `xr1_radio.cpp` LED, T3S3 `xr1_driver.cpp` |
+| 4 — 2.4 GHz protocol profiles (T3S3-driven) | done (T3S3 side) | T3S3 `xr1_modes.cpp` |
+| 5 — Remote ID (WiFi + BLE + DJI) | done | `remote_id_{wifi,ble,common,nan}.cpp`, `dji_droneid.cpp` |
+| 6 — Combined scenarios | done (T3S3 side) | T3S3 `combined_scenarios.cpp` |
+| 7 — Polish + validation | — | — |
 
 ## Development rules
 

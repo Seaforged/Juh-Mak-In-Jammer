@@ -74,6 +74,7 @@ bool combinedScenarioDji() {
                 "DJI-energy GFSK 250k/50k 20ch 2400.5-2481.5MHz dwell 50ms | 12 dBm",
                 "DJI DroneID OUI 26:37:12 200ms ch1/6/11 | Serial: " "JJ-XR1-TEST-001",
                 "ODID Legacy ADV 3:1 Location | UUID 0xFFFA");
+    Serial.println("  NOTE: real DJI video is OFDM; LR1121 GFSK is energy approximation only");
     return true;
 }
 

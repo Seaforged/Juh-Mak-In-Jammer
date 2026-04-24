@@ -154,22 +154,14 @@ static void rebuildFrame() {
     s_frameLen = pos;
 }
 
-// ----- 200 ms scheduler + channel rotation --------------------------------
-static uint32_t s_lastTxMs   = 0;
-static uint32_t s_lastChanMs = 0;
-static uint8_t  s_chanIdx    = 0;
-static const uint8_t WIFI_CHANS_DJI[] = { 1, 6, 11 };
+// ----- 200 ms scheduler ----------------------------------------------------
+// Channel rotation is owned by the unified controller in remote_id_common.cpp
+// so ODID and DJI don't race each other on esp_wifi_set_channel.
+static uint32_t s_lastTxMs = 0;
 
 extern "C" void ridDjiTick() {
     if (!g_ridStatus.djiActive) return;
     const uint32_t now = millis();
-
-    if (now - s_lastChanMs >= 2000) {
-        s_chanIdx = (s_chanIdx + 1) % sizeof(WIFI_CHANS_DJI);
-        esp_wifi_set_channel(WIFI_CHANS_DJI[s_chanIdx], WIFI_SECOND_CHAN_NONE);
-        s_lastChanMs = now;
-    }
-
     if (now - s_lastTxMs < 200) return;
     s_lastTxMs = now;
 
@@ -205,10 +197,9 @@ bool djiDroneIdStart(const RemoteIdState &state, uint16_t modelCode) {
     s_mac[4] = (h      ) & 0xFF;
     s_mac[5] = 0x0D;
 
-    s_lastTxMs   = 0;
-    s_lastChanMs = millis();
-    s_chanIdx    = 0;
-    esp_wifi_set_channel(WIFI_CHANS_DJI[0], WIFI_SECOND_CHAN_NONE);
+    // Channel selection is owned by the unified controller in
+    // remote_id_common.cpp; no set_channel call here (see H1 fix).
+    s_lastTxMs = 0;
 
     g_ridStatus.djiActive     = true;
     g_ridStatus.djiFrameCount = 0;
