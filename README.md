@@ -1,176 +1,208 @@
 ![Juh-Mak-In Jammer Logo](Juh-Mak-In%20Jammer.png)
-# JUH-MAK-IN JAMMER — Sub-GHz Drone Signal Emulator
 
-**Professional test instrument for validating passive drone RF detection systems**
+# JUH-MAK-IN JAMMER — Counter-UAS RF Test Signal Emulator
+
+**Professional test instrument for validating passive drone RF detection
+systems across sub-GHz, 2.4 GHz, WiFi, and BLE.**
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
-![Platform: ESP32-S3](https://img.shields.io/badge/Platform-ESP32--S3-blue.svg)
-![Version: v2.0.0](https://img.shields.io/badge/Version-v2.0.0-orange.svg)
+![Platform: ESP32-S3 + ESP32-C3](https://img.shields.io/badge/Platform-ESP32--S3%20%2B%20ESP32--C3-blue.svg)
+![Version: v3.0.0](https://img.shields.io/badge/Version-v3.0.0-brightgreen.svg)
 
-Part of the [Seaforged](https://github.com/Seaforged) counter-UAS test infrastructure. Designed to test [SENTRY-RF](https://github.com/Seaforged/Sentry-RF), an open-source passive drone RF detector.
+Built by [Seaforged](https://seaforged.io) — veteran-owned counter-UAS
+infrastructure. Designed to test
+[SENTRY-RF](https://github.com/Seaforged/Sentry-RF), an open-source passive
+drone RF detector.
 
 ---
 
 ## What It Does
 
-JUH-MAK-IN JAMMER (JJ) simulates real-world drone RF control protocols so detection systems can be tested without real drones. It generates authentic LoRa FHSS, GFSK, and WiFi signals that exercise every detection path a passive RF sensor needs to cover.
+JUH-MAK-IN JAMMER (JJ) v3.0 is a **dual-board** calibrated RF signal
+generator that emulates real drone control-link and Remote-ID emissions so
+passive detection systems can be tested without real aircraft.
 
-- **16+ operating modes** across 5 drone protocol families
-- **Protocol parameters sourced from open-source firmware** (ExpressLRS, SiK, mLRS) with regulatory standard citations
-- **False positive testing** against LoRaWAN, Meshtastic, and Helium infrastructure patterns
-- **All constants in a single header** (`protocol_params.h`) with inline v2 reference citations
+- Sub-GHz drone protocols: ELRS 900, TBS Crossfire, SiK/MAVLink, mLRS
+- 2.4 GHz drone protocols: ELRS 2.4, Ghost, FrSky D16, FlySky AFHDS-2A, DJI energy
+- Remote ID: ASTM F3411 ODID (WiFi beacon + BLE 4), DJI DroneID
+- False-positive traffic: LoRaWAN (US915 / EU868), Meshtastic, Helium PoC
+- 5 combined multi-emitter threat scenarios (`c1`–`c5`)
+- Upstream-grounded packet content (CRC-14, X.25 CRC + CRC_EXTRA, CRSF
+  frame, opendroneid-core-c) — not just an energy footprint
 
-**This is not a jammer.** It does not disrupt communications. It is a calibrated RF signal generator for controlled detection system testing.
+**JJ is NOT a jammer.** It does not disrupt communications. It is a
+calibrated signal generator for controlled detection testing.
+
+---
+
+## Hardware Architecture
+
+v3.0 is a **three-emitter** system driven from a single USB-C connection
+to the T3S3 host:
+
+| Emitter | Hardware | Role |
+|---|---|---|
+| **T3S3** | LilyGo T3-S3 V1.3 (ESP32-S3 + SX1262) | Primary sub-GHz LoRa/FSK |
+| **XR1** (LR1121) | RadioMaster XR1 Nano (ESP32-C3 + LR1121) | 2.4 GHz LoRa/FSK |
+| **XR1** (WiFi/BLE) | ESP32-C3 built-in WiFi + BLE | Remote ID transports |
+
+The T3S3 controls the XR1 over a 115200 baud crossed UART link. See
+[BUILD_GUIDE.md](BUILD_GUIDE.md) for BoM, wiring, and flashing.
 
 ---
 
 ## Supported Protocols
 
-### Drone Protocols
+### Sub-GHz (T3S3 / SX1262)
 
-| Protocol | Modulation | Bands | Channels | Hop Rate | Serial | Description |
-|----------|-----------|-------|----------|----------|--------|-------------|
-| **ExpressLRS** | LoRa FHSS | FCC915, AU915, EU868, IN866 | 4-40 | 6-250 hops/s | `e` | 6 air rates (SF5-SF9), 4 domains, binding state, sync channel. CR 4/7, 6-sym preamble, real LCG constants. |
-| **TBS Crossfire** | GFSK FHSS | 915 MHz | 100 | 150 hops/s | `g` | 85.1 kbps FSK, 260 kHz spacing. |
-| **SiK Radio** | GFSK TDM+FHSS | 915 MHz | 50 | ~50 hops/s | `k` | MAVLink telemetry link (ArduPilot/PX4). 64/125/250 kbps. Guard-band channel formula. |
-| **mLRS** | LoRa/FSK FHSS | 915 MHz | 20 | 9.5-25 hops/s | `l` | Symmetric TX/RX alternation. 19/31/50 Hz modes. Slowest FHSS pattern for detection testing. |
-| **Custom LoRa** | User-configurable | 860-930 MHz | 1-16 | 1-100 Hz | `u` | Any SF (5-12), BW (7.8-500 kHz), frequency, hop pattern. Tests detection of unknown drone signatures. |
-| **WiFi Remote ID** | WiFi + BLE | 2.4 GHz | - | 1 Hz | `r` | ASTM F3411 Open Drone ID beacon spoofing. |
-| **Drone Swarm** | WiFi | 2.4 GHz | - | 20 Hz | `w` | 1-16 virtual drones with unique IDs and circular orbits. |
+| Cmd | Protocol | Bands | Rates | Fidelity |
+|---|---|---|---|---|
+| `e` | ExpressLRS FHSS | FCC915 / AU915 / EU868 / IN866 | 6 air rates (25–500 Hz) | **PASS** |
+| `g` | TBS Crossfire FSK | 915 / 868 MHz | 150 Hz, 42.48 kHz deviation | **PARTIAL** |
+| `gl` | Crossfire LoRa | 915 / 868 MHz | 50 Hz | FOOTPRINT |
+| `k` | SiK Radio (MAVLink) | 915 MHz | 64 / 125 / 250 kbps | **PARTIAL** |
+| `l` | mLRS | 915 MHz, 43 ch | 19 / 31 / 50 Hz | FOOTPRINT |
+| `u` | Custom LoRa | 860–930 MHz | user-configurable | — |
 
-### ELRS Air Rates
+### 2.4 GHz (XR1 / LR1121)
 
-| Command | Rate | SF | Hop Interval | DVDA | Use Case |
-|---------|------|----|-------------|------|----------|
-| `e1` | 200 Hz | SF6 | 4 | No | Racing / freestyle |
-| `e2` | 100 Hz | SF7 | 4 | No | Balanced |
-| `e3` | 50 Hz | SF8 | 4 | No | Long range |
-| `e4` | 25 Hz | SF9 | 4 | No | Ultra long range |
-| `e5` | 250 Hz | SF6 | 2 | Yes | DVDA fast |
-| `e6` | 500 Hz | SF5 | 2 | Yes | DVDA fastest |
+| Cmd | Protocol | Modulation | Fidelity |
+|---|---|---|---|
+| `x1`–`x4` | ELRS 2.4 (500 / 250 / 150 / 50 Hz) | LoRa FHSS, per-nonce CRC-14 | **PASS** |
+| `x5` | ImmersionRC Ghost | GFSK | APPROXIMATE |
+| `x6` | FrSky D16 | GFSK | FOOTPRINT |
+| `x7` | FlySky AFHDS-2A | GFSK | FOOTPRINT |
+| `x8` | DJI energy | LoRa-shaped | FOOTPRINT |
+| `x9` | Generic 2.4 | user-configurable LoRa or FSK | — |
 
-Append domain letter: `e1f` (FCC915), `e1a` (AU915), `e1u` (EU868), `e1i` (IN866). Append `b` for binding state: `e1fb`.
+### Remote ID (XR1 WiFi / BLE)
 
-### False Positive Testing
+| Cmd | Transport | Spec | Fidelity |
+|---|---|---|---|
+| `y1` | WiFi ODID beacon | ASTM F3411, Message Pack | **PASS** |
+| `y2` | BLE 4 ODID | UUID 0xFFFA, legacy advertisement | **PARTIAL** |
+| `y3` | DJI DroneID | OUI 26:37:12, Flight Telemetry | **PARTIAL** |
+| `y4` | WiFi NaN | — | STUB (ESP32-C3 limitation) |
+| `y` / `ya` | All three | — | — |
 
-These modes simulate non-drone LoRa infrastructure that detection systems must correctly reject:
+### Combined Scenarios
 
-| Mode | Sync Word | Preamble | Pattern | Serial | Why It Matters |
-|------|-----------|----------|---------|--------|----------------|
-| **LoRaWAN US915** | 0x34 (public) | 8 sym | 8 SB2 channels, 30-60s interval | `i` | Standard IoT — must not trigger alerts |
-| **LoRaWAN EU868** | 0x34 (public) | 8 sym | 868.1/868.3/868.5 MHz, ~60s | `f3` | EU band coverage |
-| **Meshtastic** | 0x2B | 16 sym | Fixed frequency, periodic beacon + relay cascade | `f1` | Different sync word and long preamble |
-| **Helium PoC** | 0x34 (public) | 8 sym | 5 hotspots, rotating SB2 channels | `f2` | Hardest FP pattern: slow multi-channel diversity |
-| **Mixed** | Both | Both | ELRS FHSS + LoRaWAN interleaved | `m` | Combined drone + infrastructure |
+| Cmd | Scenario | Emitters |
+|---|---|---|
+| `c1` | Racing Drone | ELRS 200Hz + ELRS 500Hz 2.4 + WiFi/BLE ODID |
+| `c2` | DJI Consumer | DJI energy + DJI DroneID + BLE ODID |
+| `c3` | Long Range FPV | Crossfire 915 + WiFi/BLE ODID |
+| `c4` | Dual-Band ELRS | ELRS sub-GHz + ELRS 2.4 |
+| `c5` | Everything | Dual-band ELRS + all 3 RID transports |
+
+### Infrastructure / False Positive
+
+| Cmd | Source | Pattern |
+|---|---|---|
+| `i` | LoRaWAN US915 | 8 SB2 channels, 30–60 s |
+| `f1` | Meshtastic | sync 0x2B, 16-sym preamble |
+| `f2` | Helium PoC | 5 hotspots, rotating SB2 |
+| `f3` | LoRaWAN EU868 | 868.1 / .3 / .5 MHz |
+| `m` | Mixed FP | LoRaWAN + ELRS interleaved |
+
+See [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) for the full command
+reference (special modes, sweep, power ramp, drone swarm, controls).
 
 ---
 
-## Hardware
+## Protocol Fidelity Scorecard
 
-| Component | Details |
-|-----------|---------|
-| Board | LilyGo T3S3 V1.3 (ESP32-S3 + SX1262) |
-| Radio | Semtech SX1262: 150-960 MHz, LoRa SF5-SF12, FSK 0.6-300 kbps, +22 dBm max |
-| Display | SSD1306 128x64 OLED via I2C |
-| Antenna | SMA connector, 868/915 MHz whip antenna |
-| Power | USB-C, 5V |
-| Build system | PlatformIO (Arduino framework) |
+| Rating | Meaning |
+|---|---|
+| **PASS** | Authentic at all 5 layers (energy, modulation, protocol-ID, content, behavior). |
+| **PARTIAL** | RF envelope correct + some authentic content; gaps at content or behavior. |
+| **FOOTPRINT** | Correct energy + modulation class, no authentic framing. |
+| **APPROXIMATE** | Plausible modulation/energy, protocol proprietary and not reverse-engineered. |
+| **STUB** | Unavailable due to hardware / API limitation. |
 
-Same board as SENTRY-RF. Either firmware can be flashed to the same hardware.
-
----
-
-## Serial Commands
-
-All modes controllable at 115200 baud. Type `h` or `?` for the built-in help menu.
-
-```
-DRONE PROTOCOLS:
-  e  ELRS FHSS      e1-e6=rate  f/a/u/i=domain  b=binding
-  g  Crossfire FSK   150Hz GFSK 85.1kbps FHSS
-  k  SiK Radio       k1=64k  k2=125k  k3=250k
-  l  mLRS            l1=19Hz  l2=31Hz  l3=50Hz(FSK)
-  u  Custom LoRa     u?=settings  uf/us/ub/ur/uh/up/uw=config
-
-INFRASTRUCTURE (False Positive Testing):
-  i  LoRaWAN US915   Single node, 8 SB2 channels, 30-60s
-  m  Mixed FP        LoRaWAN + ELRS interleaved
-  f1 Meshtastic      16-sym preamble, sync 0x2B
-  f2 Helium PoC      5 hotspots, rotating SB2 channels
-  f3 LoRaWAN EU868   868.1/868.3/868.5 MHz
-
-SPECIAL MODES:
-  c  CW Tone         b=sweep  t=power ramp
-  r  Remote ID       WiFi+BLE ASTM F3411 broadcast
-  x  Combined        RID(Core0) + ELRS(Core1)
-  w  Drone Swarm     n=cycle count (1/4/8/16)
-
-CONTROLS:
-  q  Stop TX         p=cycle power  h/?=this menu
-```
+v3.0 achieves PASS on ELRS 900, ELRS 2.4, and ODID WiFi; PARTIAL on
+Crossfire FSK, SiK/MAVLink, DJI DroneID, and ODID BLE.
 
 ---
 
 ## Quick Start
 
 ```bash
-# Clone
-git clone https://github.com/Seaforged/Juh-Mak-In-Jammer.git
+git clone https://github.com/seaforged-dev/Juh-Mak-In-Jammer.git
 cd Juh-Mak-In-Jammer
 
-# Build
+# Build both firmwares
 pio run -e t3s3
+(cd xr1-firmware && pio run -e xr1)
 
-# Flash
-pio run -e t3s3 --target upload
+# Flash T3S3 directly, flash XR1 via T3S3 passthrough — see BUILD_GUIDE.md
+pio run -e t3s3 --target upload --upload-port COMx
 
-# Monitor
+# Open serial monitor
 pio device monitor -b 115200
 ```
 
-On boot, JJ prints the help menu. Type `e` to start ELRS 200 Hz FCC915 simulation, or `h` to see all commands.
+On boot, JJ prints the help menu. Type `h` or `?` to see it again.
 
 ---
 
-## Protocol Reference
+## Project Structure
 
-All protocol parameters are documented in [`docs/JJ_Protocol_Emulation_Reference_v2.md`](docs/JJ_Protocol_Emulation_Reference_v2.md), with citations to:
-
-- **ExpressLRS firmware** (`FHSS.cpp`, `rx_main.cpp`) for channel tables, hop intervals, LCG constants
-- **ArduPilot SiK documentation** for channel formulas and TDM behavior
-- **LoRa Alliance RP002-1.0.2** for LoRaWAN channel plans
-- **ETSI EN 300 220 V3.1.1** for EU868 duty cycle regulations
-- **FCC 47 CFR 15.247** for US ISM band requirements
-- **NCC Group** and **GNU Radio research** confirming ELRS FHSS sequence generation
-
-Constants marked `[VERIFY]` in the reference document have not been confirmed against primary sources and are noted with TODO comments in the code.
-
----
-
-## Automated Testing
-
-JJ is designed for dual-device automated testing against SENTRY-RF. Python test scripts in the [SENTRY-RF repository](https://github.com/Seaforged/Sentry-RF):
-
-```bash
-python run_test.py e   # Test ELRS FHSS detection
-python run_test.py c   # Test CW tone detection
-python full_validation.py  # Run all modes, generate PASS/FAIL summary
 ```
+Juh-Mak-In-Jammer/
+├─ src/                     # T3S3 host firmware (ESP32-S3 + SX1262)
+├─ include/                 # T3S3 headers (board_config, protocol_params, …)
+├─ xr1-firmware/            # XR1 secondary firmware (ESP32-C3 + LR1121)
+│  ├─ src/
+│  ├─ include/
+│  └─ lib/opendroneid/      # Vendored opendroneid-core-c
+├─ tools/xr1_passthrough/   # T3S3 sketch that bridges USB↔XR1 UART for flashing
+├─ docs/
+│  ├─ USER_GUIDE.md                        # Operator's manual
+│  ├─ JJ_Protocol_Emulation_Reference_v2.md # Authoritative protocol parameters
+│  ├─ JJ_v3_Consolidated_Roadmap.md         # Phase history
+│  └─ …
+├─ README.md
+├─ BUILD_GUIDE.md                          # Hardware bring-up + flashing
+└─ platformio.ini
+```
+
+---
+
+## Documentation
+
+- [USER_GUIDE.md](docs/USER_GUIDE.md) — Complete operator's manual
+- [BUILD_GUIDE.md](BUILD_GUIDE.md) — Hardware setup, wiring, flashing
+- [`docs/JJ_Protocol_Emulation_Reference_v2.md`](docs/JJ_Protocol_Emulation_Reference_v2.md)
+  — Authoritative protocol parameters with upstream citations:
+  ExpressLRS firmware, TBS Crossfire, ArduPilot SiK, mLRS (olliw42),
+  opendroneid-core-c, ASTM F3411, LoRa Alliance RP002, ETSI EN 300 220,
+  FCC 47 CFR 15.247.
 
 ---
 
 ## Legal Disclaimer
 
-This tool transmits RF energy on ISM bands (868/915 MHz) and WiFi (2.4 GHz). **The user is responsible for compliance with all applicable local, national, and international RF regulations.**
+This tool transmits RF energy on ISM bands (868/915 MHz, 2.4 GHz) and
+emits WiFi beacons and BLE advertisements. **The user is responsible for
+compliance with all applicable local, national, and international RF
+regulations** (e.g. FCC Part 15, ETSI EN 300 220, ETSI EN 300 328).
 
-- Intended for testing detection systems in controlled environments
-- Use shielded enclosures or inline attenuators for conducted testing
-- Do not use to interfere with actual drone operations or communications
-- Do not transmit on frequencies you are not authorized to use
-- Remote ID spoofing generates test beacons only — do not use to impersonate real aircraft
+- Intended for testing passive detection systems in controlled environments.
+- Use shielded enclosures or inline attenuators for conducted testing.
+- Do **not** transmit on frequencies you are not authorized to use.
+- Do **not** impersonate real aircraft. Remote ID emissions are **test
+  beacons only**.
+- Do **not** use to interfere with actual drone operations or safety-of-life
+  communications.
 
-The authors assume no liability for misuse. See [LICENSE](LICENSE) for full terms.
+The authors assume no liability for misuse. See [LICENSE](LICENSE) for
+full terms.
+
+---
 
 ## License
 
 MIT License. See [LICENSE](LICENSE).
+
+Built with care by [Seaforged](https://seaforged.io).
