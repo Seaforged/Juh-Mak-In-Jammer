@@ -149,7 +149,7 @@ void combinedStart() {
 
     _startTimeMs = millis();
     _combinedRunning = true;
-    Serial.println("COMBINED: Started — RID on Core 0, ELRS on Core 1");
+    Serial.println("COMBINED: Started -- RID on Core 0, ELRS on Core 1");
 }
 
 void combinedStop() {
@@ -164,7 +164,7 @@ void combinedStop() {
             vTaskDelay(pdMS_TO_TICKS(5));
         }
         if (!_elrsTaskExited) {
-            Serial.println("COMBINED: ELRS task exit timeout â€” forcing delete");
+            Serial.println("COMBINED: ELRS task exit timeout -- forcing delete");
             vTaskDelete(_elrsTaskHandle);
             _elrsTaskExited = true;
         }
@@ -176,7 +176,7 @@ void combinedStop() {
     ridStop();
 
     _combinedRunning = false;
-    Serial.printf("COMBINED: Stopped — ELRS: %lu pkts, %lu hops\n",
+    Serial.printf("COMBINED: Stopped -- ELRS: %lu pkts, %lu hops\n",
                   (unsigned long)_elrsTaskPkts,
                   (unsigned long)_elrsTaskHops);
 }

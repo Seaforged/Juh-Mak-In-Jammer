@@ -65,6 +65,29 @@ static RemoteIdState s_state = {};
 static uint16_t      s_modelCode = 0x0A;
 static uint16_t      s_seq = 0;
 
+// Realistic telemetry state (Fix 7 — fix2.md). Real DJI drones lock home
+// at takeoff and report small attitude oscillations, not fixed zero. We
+// snapshot home on the first packet and let heading/pitch/roll drift
+// slowly so packet-capture-based detectors see plausible flight dynamics.
+static bool     s_homeLocked     = false;
+static double   s_homeLatitude   = 0.0;
+static double   s_homeLongitude  = 0.0;
+static float    s_headingDrift   = 0.0f;   // degrees, accumulated
+static int16_t  s_pitchCentideg  = 0;      // ±200 (= ±2°) raw/100 units
+static int16_t  s_rollCentideg   = 0;
+static uint32_t s_lastTelemetryMs = 0;
+static uint32_t s_rngState       = 0xA5A57C1Bu;
+
+static int16_t nextAttitudeDeviation() {
+    // Simple xorshift → ±200 (2° * 100 raw units), low-rate drift.
+    s_rngState ^= s_rngState << 13;
+    s_rngState ^= s_rngState >> 17;
+    s_rngState ^= s_rngState << 5;
+    const int16_t r = (int16_t)(s_rngState & 0xFF) - 128;   // ±128
+    // Scale 128 → 200 via (r * 200) / 128
+    return (int16_t)((int32_t)r * 200 / 128);
+}
+
 static inline void put16le(uint8_t *p, int16_t v)   { p[0] = v & 0xFF; p[1] = (v >> 8) & 0xFF; }
 static inline void putU16le(uint8_t *p, uint16_t v) { p[0] = v & 0xFF; p[1] = (v >> 8) & 0xFF; }
 static inline void put32le(uint8_t *p, int32_t v)   {
@@ -92,11 +115,44 @@ static uint8_t s_frame[256];
 static size_t  s_frameLen = 0;
 
 static void buildDjiPayload(uint8_t *p /*79 bytes*/) {
+    // Lock home position on the first packet — real DJI drones capture
+    // "home" at takeoff and keep broadcasting the same coordinates until
+    // landing / reboot. Fixed home is also what AeroScope / Kismet parsers
+    // expect to see in replayed flight telemetry.
+    if (!s_homeLocked) {
+        s_homeLatitude  = s_state.latitude;
+        s_homeLongitude = s_state.longitude;
+        s_homeLocked    = true;
+        s_lastTelemetryMs = millis();
+    }
+
+    // Slow heading drift: ±0.5 deg per second modulated from the RNG.
+    const uint32_t now = millis();
+    const uint32_t dtMs = now - s_lastTelemetryMs;
+    s_lastTelemetryMs = now;
+    if (dtMs > 0 && dtMs < 5000) {
+        s_rngState ^= s_rngState << 13;
+        s_rngState ^= s_rngState >> 17;
+        s_rngState ^= s_rngState << 5;
+        const float step = ((int)(s_rngState & 0xFF) - 128) / 128.0f * 0.5f;  // ±0.5°
+        s_headingDrift += step * (dtMs / 1000.0f);
+        if (s_headingDrift >  180.0f) s_headingDrift -= 360.0f;
+        if (s_headingDrift < -180.0f) s_headingDrift += 360.0f;
+    }
+    const float effectiveHeading = s_state.headingDeg + s_headingDrift;
+
+    // Update pitch/roll drift once per 500 ms so a demod receiver sees
+    // plausible attitude wiggle instead of a statue.
+    static uint32_t lastAttUpdate = 0;
+    if (now - lastAttUpdate >= 500) {
+        lastAttUpdate = now;
+        s_pitchCentideg = nextAttitudeDeviation();
+        s_rollCentideg  = nextAttitudeDeviation();
+    }
+
     memset(p, 0, 79);
     p[0] = DJI_OUI_TYPE;
-    // [1..2] version / padding left zero
     p[3] = 0x10;                         // subcommand: flight telemetry
-    // [4] pad
     putU16le(p + 5, s_seq++);            // sequence
     putU16le(p + 7, 0x0FFF);             // state_info: all valid flags
 
@@ -108,30 +164,36 @@ static void buildDjiPayload(uint8_t *p /*79 bytes*/) {
     put16le(p + 33, (int16_t)s_state.altitudeMeters);
     put16le(p + 35, 50);                 // height AGL = 50 m
 
-    // Velocity components: v_north, v_east, v_up. Approximate from speed+hdg.
-    const float radHdg = s_state.headingDeg * 0.0174533f;
+    const float radHdg = effectiveHeading * 0.0174533f;
     put16le(p + 37, (int16_t)(s_state.speedMps * cosf(radHdg)));  // v_north
     put16le(p + 39, (int16_t)(s_state.speedMps * sinf(radHdg)));  // v_east
     put16le(p + 41, 0);                                           // v_up
 
-    // Pitch / roll / yaw — yaw matches heading expressed in DJI's raw units.
-    put16le(p + 43, 0);                                // pitch
-    put16le(p + 45, 0);                                // roll
-    put16le(p + 47, (int16_t)(s_state.headingDeg * 100));  // yaw (raw/100)
+    put16le(p + 43, s_pitchCentideg);                // pitch (raw/100)
+    put16le(p + 45, s_rollCentideg);                 // roll  (raw/100)
+    put16le(p + 47, (int16_t)(effectiveHeading * 100));   // yaw
 
-    // Home = current position for a simulated stationary takeoff point.
-    put32le(p + 49, (int32_t)(s_state.longitude * DJI_LL_SCALE));
-    put32le(p + 53, (int32_t)(s_state.latitude  * DJI_LL_SCALE));
+    // Home stays locked at takeoff coordinates.
+    put32le(p + 49, (int32_t)(s_homeLongitude * DJI_LL_SCALE));
+    put32le(p + 53, (int32_t)(s_homeLatitude  * DJI_LL_SCALE));
 
     p[57] = (uint8_t)(s_modelCode & 0xFF);
     p[58] = 0;
 
-    // UUID[20]: derive from serial hash so replays stay consistent.
+    // UUID[20]: derive from serial via a stronger hash than the previous
+    // FNV loop. We use a 20-byte expansion seeded from FNV-1a → LCG so
+    // each byte is different (the old "h >> (b & 24)" pattern repeated
+    // every four bytes). Still deterministic per-serial for replay
+    // consistency; SHA-256 truncation would be nicer but Bluedroid+WiFi
+    // already owns most of the flash budget.
     uint8_t *u = p + 59;
-    uint32_t h = 0xABCD1234u;
+    uint32_t h = 0x811c9dc5u;
     for (const char *c = s_state.serial; *c; ++c) {
         h = (h ^ (uint8_t)*c) * 0x01000193u;
-        for (int b = 0; b < 20; ++b) u[b] ^= (uint8_t)(h >> (b & 24));
+    }
+    for (int b = 0; b < 20; ++b) {
+        h = h * 1664525u + 1013904223u;
+        u[b] = (uint8_t)(h >> ((b & 3) * 8));
     }
 }
 
@@ -182,6 +244,12 @@ bool djiDroneIdStart(const RemoteIdState &state, uint16_t modelCode) {
     s_state     = state;
     s_modelCode = modelCode ? modelCode : 0x0A;   // default Mini 2
     s_seq       = 0;
+    // Reset realistic-telemetry state so home locks to this takeoff's
+    // coordinates and attitude drift starts centered.
+    s_homeLocked    = false;
+    s_headingDrift  = 0.0f;
+    s_pitchCentideg = 0;
+    s_rollCentideg  = 0;
 
     if (!ridWifiStackBringUp()) {
         Serial.println("[XR1-RID] DJI WiFi stack init failed");

@@ -48,7 +48,7 @@ bool combinedScenarioRacing() {
     if (!elrsStart())                                   return false;
     if (!xr1ModeElrs2g4Start(0))                       { elrsStop(); return false; }
     const bool ridOk = xr1RidStart(XR1_RID_WIFI | XR1_RID_BLE);
-    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed — running without RID");
+    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed -- running without RID");
 
     s_status = { COMBINED_RACING, "Racing Drone",
                  true, true,
@@ -67,7 +67,7 @@ bool combinedScenarioDji() {
     // No sub-GHz emitter in DJI scenarios — DJI control is 2.4 GHz only.
     if (!xr1ModeDjiEnergyStart())                       return false;
     const bool ridOk = xr1RidStart(XR1_RID_DJI | XR1_RID_BLE);
-    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed — running without RID");
+    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed -- running without RID");
 
     s_status = { COMBINED_DJI, "DJI Consumer",
                  false, true,
@@ -86,7 +86,7 @@ bool combinedScenarioLongRange() {
     combinedScenarioStop();
     crossfireStart();   // Crossfire FSK 150 Hz @ 915
     const bool ridOk = xr1RidStart(XR1_RID_WIFI | XR1_RID_BLE);
-    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed — running without RID");
+    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed -- running without RID");
 
     s_status = { COMBINED_LONGRANGE, "Long Range FPV",
                  true, false, ridOk, ridOk, false,
@@ -124,7 +124,7 @@ bool combinedScenarioEverything() {
     if (!elrsStart())                                   return false;
     if (!xr1ModeElrs2g4Start(0))                       { elrsStop(); return false; }
     const bool ridOk = xr1RidStart(XR1_RID_ALL);    // WiFi ODID + BLE ODID + DJI DroneID
-    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed — running without RID");
+    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed -- running without RID");
 
     s_status = { COMBINED_EVERYTHING, "Everything",
                  true, true, ridOk, ridOk, ridOk,

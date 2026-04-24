@@ -33,9 +33,19 @@ static unsigned long _lastHopUs = 0;
 // TDM timing: ~20 ms TX window per channel = ~50 hops/sec — v2 §3.3.2
 static const uint32_t SIK_HOP_INTERVAL_US = 20000;
 
-// TX payload — random bytes, no valid MAVLink framing needed
-// SiK TX window at 64 kbps × 20 ms = ~160 bytes max
+#include "protocol_packets.h"
+
+// TX payload is a real MAVLink v2 HEARTBEAT (21 bytes) — a decoding receiver
+// sees a properly CRC'd HEARTBEAT and recognizes the system as a live
+// ArduPilot quadrotor. Previously this was random filler; real SiK links
+// carry MAVLink framing.
 static uint8_t _sikPayload[32];
+static uint8_t _sikMavSeq = 0;
+static size_t  _sikPayloadLen = 0;
+
+static void sikBuildMavlinkHeartbeat() {
+    _sikPayloadLen = build_mavlink_heartbeat_v2(_sikPayload, _sikMavSeq);
+}
 
 // Build channel frequency table using SiK formula — v2 §3.3.2
 // channel[n] = MIN + guard_delta + (n * channel_width) + NETID_skew
@@ -86,10 +96,9 @@ void sikStart() {
     _packetCount = 0;
     _hopCount = 0;
 
-    // Generate random payload
-    for (uint8_t i = 0; i < sizeof(_sikPayload); i++) {
-        _sikPayload[i] = (uint8_t)(esp_random() & 0xFF);
-    }
+    // Build initial MAVLink HEARTBEAT — rebuilt fresh on every TX so the
+    // seq counter increments and CRC stays valid.
+    sikBuildMavlinkHeartbeat();
 
     int8_t pwr = rfGetPower();
 
@@ -124,7 +133,8 @@ void sikStart() {
     _lastHopUs = micros();
 
     // Transmit first packet
-    _radio->transmit(_sikPayload, sizeof(_sikPayload));
+    sikBuildMavlinkHeartbeat();
+    _radio->transmit(_sikPayload, _sikPayloadLen);
     _packetCount++;
 
     // Protocol info output — v2 §7.2
@@ -159,7 +169,8 @@ void sikUpdate() {
     _currentMHz = nextFreq;
 
     _radio->setFrequency(nextFreq);
-    _radio->transmit(_sikPayload, sizeof(_sikPayload));
+    sikBuildMavlinkHeartbeat();
+    _radio->transmit(_sikPayload, _sikPayloadLen);
     _packetCount++;
 }
 

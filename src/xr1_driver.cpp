@@ -57,7 +57,7 @@ void xr1Init() {
         }
         if (!sawReady) delay(5);
     }
-    Serial.printf("[XR1-BOOT] end — sawReady=%d totalRxBytes=%u\n",
+    Serial.printf("[XR1-BOOT] end -- sawReady=%d totalRxBytes=%u\n",
                   (int)sawReady, (unsigned)totalRx);
     delay(50);
     while (Serial1.available() > 0) { (void)Serial1.read(); }
@@ -191,6 +191,19 @@ bool xr1Transmit(const uint8_t *data, uint8_t len) {
     char cmd[140];
     size_t pos = 0;
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, "TX ");
+    for (uint8_t i = 0; i < len; ++i) {
+        pos += snprintf(cmd + pos, sizeof(cmd) - pos, "%02X", data[i]);
+    }
+    return sendCmdExpectOk(cmd);
+}
+
+bool xr1SetPayload(const uint8_t *data, uint8_t len) {
+    if (len == 0 || len > 64) {
+        Serial.println("[XR1-ERR] xr1SetPayload: invalid length");
+        return false;
+    }
+    char cmd[140];
+    size_t pos = snprintf(cmd, sizeof(cmd), "PAYLOAD ");
     for (uint8_t i = 0; i < len; ++i) {
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, "%02X", data[i]);
     }

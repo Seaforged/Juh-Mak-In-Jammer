@@ -53,7 +53,7 @@ static void showBootScreen() {
 
 // --- Help Menu ---
 static void printHelp() {
-    Serial.printf("=== %s v%s — Drone Signal Emulator ===\n\n", JAMMER_NAME, JAMMER_VERSION);
+    Serial.printf("=== %s v%s -- Drone Signal Emulator ===\n\n", JAMMER_NAME, JAMMER_VERSION);
 
     Serial.println("DRONE PROTOCOLS:");
     Serial.println("  e  ELRS RF profile e1-e6=rate  f/a/u/i=domain  b=binding");
@@ -156,7 +156,7 @@ void setup() {
     // boot. We ping it here so the operator sees whether the secondary
     // emitter is reachable before the menu takes over.
     xr1Init();
-    Serial.println(xr1Ping() ? "[XR1] Connected" : "[XR1] No response — check wiring");
+    Serial.println(xr1Ping() ? "[XR1] Connected" : "[XR1] No response -- check wiring");
 
     // Diagnostic: dump XR1 self-reported state. "OK <freq> <mod> <pwr> <state>"
     // tells us whether LR1121 init + self-test succeeded (healthy) or whether
@@ -231,7 +231,7 @@ static void xr1HealthTick() {
     Serial.printf("[XR1] health check miss %u/3\n", (unsigned)missCount);
     if (missCount < 3) return;
 
-    Serial.println("[XR1] unresponsive during active session â€” stopping active mode");
+    Serial.println("[XR1] unresponsive during active session -- stopping active mode");
     stopCurrentMode();
     menuSetState(STATE_MAIN_MENU);
     lastCheckMs = 0;

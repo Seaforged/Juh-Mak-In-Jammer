@@ -37,6 +37,10 @@ bool xr1SetLoRaEx(uint8_t sf, float bwKhz, uint8_t cr,
 bool xr1SetFSK(float bitrateKbps, float devKhz);
 bool xr1SetPower(int8_t dbm);
 bool xr1Transmit(const uint8_t *data, uint8_t len);
+// Cache a TX template on the XR1 without transmitting. The HOP engine uses
+// this template when in ELRS-style packet-timing mode; see Fix 2 in docs/
+// fix2.md. Rolling byte-0 (nonce) happens on the XR1 side.
+bool xr1SetPayload(const uint8_t *data, uint8_t len);
 bool xr1StartHop(const float *channels, uint8_t count, uint16_t dwellMs);
 bool xr1StartHopEx(const float *channels, uint8_t count, uint16_t dwellMs,
                    uint32_t packetIntervalUs, uint8_t packetsPerHop,

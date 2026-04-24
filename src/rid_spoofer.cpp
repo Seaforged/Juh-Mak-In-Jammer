@@ -473,7 +473,7 @@ void ridStop() {
     }
     _bleAdvRunning = false;
 
-    Serial.printf("RID: Stopped — %lu WiFi beacons, %lu BLE adverts\n",
+    Serial.printf("RID: Stopped -- %lu WiFi beacons, %lu BLE adverts\n",
                   (unsigned long)_wifiCount, (unsigned long)_bleCount);
 }
 

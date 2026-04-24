@@ -147,7 +147,7 @@ void sweepStart() {
     if (state == RADIOLIB_ERR_NONE) {
         _sweepRunning = true;
         _lastStepUs = micros();
-        Serial.printf("SWEEP ON: %.1f→%.1f MHz, step=%.2f MHz, dwell=%u us\n",
+        Serial.printf("SWEEP ON: %.1f->%.1f MHz, step=%.2f MHz, dwell=%u us\n",
                       SWEEP_START_MHZ, SWEEP_END_MHZ,
                       SWEEP_STEP_PRESETS[_stepPreset],
                       SWEEP_DWELL_PRESETS[_dwellPreset]);
@@ -268,9 +268,20 @@ static uint8_t  _elrsPktsSinceHop = 0;
 static float    _elrsCurrentMHz = 0;
 static unsigned long _elrsLastPktUs = 0;
 
-// Dummy payloads matching real ELRS packet sizes per air rate — v2 §3.1.2
-static const uint8_t ELRS_PAYLOAD_8[]  = { 0xE1, 0x25, 0x00, 0x00, 0x05, 0x7A, 0x3C, 0xAA };
-static const uint8_t ELRS_PAYLOAD_10[] = { 0xE1, 0x25, 0x00, 0x00, 0x05, 0x7A, 0x3C, 0xAA, 0x55, 0xBB };
+#include "protocol_packets.h"
+
+// Wire-authentic ELRS OTA packets (replaces Phase 1 static dummies).
+// Generated fresh each TX with an incrementing nonce and a CRC-14 seeded
+// from JJ_ELRS_TEST_UID so a detector demodulating the bytes sees a
+// consistent binding and valid CRC. See include/protocol_packets.h.
+static uint8_t _elrsTxBuf[10];
+static uint8_t _elrsNonceCounter = 0;
+
+static const uint8_t *elrsNextPayload(uint8_t payloadLen) {
+    build_elrs_ota_packet(_elrsTxBuf, payloadLen,
+                          _elrsNonceCounter, JJ_ELRS_TEST_UID);
+    return _elrsTxBuf;
+}
 
 // Binding/beacon state machine — v2 §3.1.7
 enum ElrsState { ELRS_STATE_CONNECTED, ELRS_STATE_BINDING };
@@ -375,8 +386,8 @@ bool elrsStart() {
     _elrsRunning = true;
     _elrsLastPktUs = micros();
 
-    // Select payload size based on air rate — v2 §3.1.2
-    const uint8_t* payload = (rate.payloadLen <= 8) ? ELRS_PAYLOAD_8 : ELRS_PAYLOAD_10;
+    // Build a fresh OTA packet — nonce increments, CRC-14 over body.
+    const uint8_t* payload = elrsNextPayload(rate.payloadLen);
     _radio->startTransmit(payload, rate.payloadLen);
     _elrsPacketCount++;
     _elrsPktsSinceHop = 1;
@@ -491,7 +502,7 @@ void elrsUpdate() {
         // Transmit beacon at 1 Hz on sync channel
         if ((nowMs - _bindingLastTxMs) >= 1000) {
             _bindingLastTxMs = nowMs;
-            _radio->startTransmit(ELRS_PAYLOAD_8, 8);
+            _radio->startTransmit(elrsNextPayload(8), 8);
             _elrsPacketCount++;
         }
         return;
@@ -531,7 +542,7 @@ void elrsUpdate() {
         _radio->setFrequency(nextFreq);
     }
 
-    const uint8_t* payload = (_elrsRate->payloadLen <= 8) ? ELRS_PAYLOAD_8 : ELRS_PAYLOAD_10;
+    const uint8_t* payload = elrsNextPayload(_elrsRate->payloadLen);
     int16_t txRc = _radio->startTransmit(payload, _elrsRate->payloadLen);
     if (txRc == RADIOLIB_ERR_NONE) {
         _elrsPacketCount++;

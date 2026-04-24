@@ -108,7 +108,7 @@ void powerRampStart() {
     _radio->transmit(RAMP_PAYLOAD, sizeof(RAMP_PAYLOAD));
     _packetCount++;
 
-    Serial.printf("RAMP: Started, %d→%d dBm over %lu sec, ELRS FHSS\n",
+    Serial.printf("RAMP: Started, %d->%d dBm over %lu sec, ELRS FHSS\n",
                   PWR_MIN, PWR_MAX, (unsigned long)_rampDuration);
 }
 

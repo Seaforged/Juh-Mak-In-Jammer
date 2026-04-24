@@ -45,7 +45,7 @@ void setup() {
     printBanner();
 
     if (!xr1RadioBegin()) {
-        Serial.println("[XR1] FATAL: radio init failed — halting.");
+        Serial.println("[XR1] FATAL: radio init failed -- halting.");
         return;
     }
 
@@ -54,7 +54,7 @@ void setup() {
         Serial.printf("[XR1] LR1121 version: 0x%08lX\n",
                       (unsigned long)st.hwVersion);
     } else {
-        Serial.println("[XR1] LR1121 version: (not read — RadioLib variant)");
+        Serial.println("[XR1] LR1121 version: (not read -- RadioLib variant)");
     }
 
     if (!xr1RadioHelloSelfTest()) {

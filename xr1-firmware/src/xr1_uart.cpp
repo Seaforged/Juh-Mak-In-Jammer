@@ -154,6 +154,19 @@ static void cmdTx(char *args) {
     }
 }
 
+// PAYLOAD <hex> — cache a template that subsequent TXRPT/HOP transmits use.
+// Unlike TX, this does not transmit; it only stores. Intended for pushing
+// wire-authentic protocol frames (e.g., an ELRS OTA packet with CRC-14
+// computed on the T3S3) that the XR1 then repeats on every hop.
+static void cmdPayload(char *args) {
+    uint8_t buf[XR1_PAYLOAD_MAX];
+    const int n = decodeHex(args, buf, XR1_PAYLOAD_MAX);
+    if (n <= 0) { respondErrStr("PARSE"); return; }
+    memcpy(s_lastPayload, buf, n);
+    s_lastPayloadLen = n;
+    respondOk();
+}
+
 static void cmdTxRpt(char *args) {
     unsigned interval, count;
     if (sscanf(args, "%u %u", &interval, &count) != 2) { respondErrStr("PARSE"); return; }
@@ -367,6 +380,7 @@ static const CmdEntry kCommands[] = {
     { "RESET",  cmdReset  },
     { "LED",    cmdLed    },
     { "RID",    cmdRid    },
+    { "PAYLOAD",cmdPayload},
 };
 
 static void dispatch(char *line) {
@@ -404,19 +418,33 @@ static void tickTxRpt(uint32_t now) {
 static void tickHop(uint32_t now) {
     if (!s_hopActive)                   return;
     if (s_hopPktIntervalUs > 0 && s_hopPktsPerHop > 0 && s_hopPayloadLen > 0) {
+        // If the host pre-pushed a wire-authentic template via PAYLOAD (e.g.
+        // a real ELRS OTA packet with CRC-14 computed on the T3S3), use it
+        // so every TX carries that exact byte pattern. Otherwise fall back
+        // to a synthetic hop template with a visible hop index + seq number.
         static const uint8_t kHopTemplate[13] = {
             0xE1, 0x25, 0x00, 0x00, 0x05, 0x7A, 0x3C,
             0xAA, 0x42, 0x19, 0x9C, 0x55, 0x00
         };
+        const bool useCached = (s_lastPayloadLen > 0
+                                && s_lastPayloadLen == s_hopPayloadLen);
         const uint32_t nowUs = micros();
         uint8_t burstBudget = 4;
         while (burstBudget-- > 0 && (int32_t)(nowUs - s_hopNextPktUs) >= 0) {
             uint8_t payload[XR1_PAYLOAD_MAX];
-            for (uint8_t i = 0; i < s_hopPayloadLen; ++i) {
-                payload[i] = kHopTemplate[i % sizeof(kHopTemplate)];
+            if (useCached) {
+                memcpy(payload, s_lastPayload, s_hopPayloadLen);
+                // Nonce-roll byte 0 lower 6 bits (ELRS OTA header layout).
+                payload[0] = (uint8_t)((payload[0] & 0xC0)
+                                       | (s_hopSeq & 0x3F));
+                s_hopSeq++;
+            } else {
+                for (uint8_t i = 0; i < s_hopPayloadLen; ++i) {
+                    payload[i] = kHopTemplate[i % sizeof(kHopTemplate)];
+                }
+                payload[s_hopPayloadLen - 1] = s_hopSeq++;
+                if (s_hopPayloadLen > 1) payload[s_hopPayloadLen - 2] = s_hopIdx;
             }
-            payload[s_hopPayloadLen - 1] = s_hopSeq++;
-            if (s_hopPayloadLen > 1) payload[s_hopPayloadLen - 2] = s_hopIdx;
             xr1RadioTransmit(payload, s_hopPayloadLen);
 
             ++s_hopPktsSent;
@@ -443,7 +471,7 @@ static void tickHop(uint32_t now) {
 
 // ----- public API -----------------------------------------------------------
 void xr1UartInit() {
-    // Serial is already begun by main setup() — we don't re-init it here to
+    // Serial is already begun by main setup() -- we don't re-init it here to
     // avoid clobbering the initial banner. Zero local state only.
     s_lineLen = 0;
     s_lineBroken = false;

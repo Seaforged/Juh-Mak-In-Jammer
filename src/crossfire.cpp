@@ -26,11 +26,28 @@ static uint32_t _crsfHopCount    = 0;
 static float    _crsfCurrentMHz  = 0;
 static unsigned long _crsfLastHopUs = 0;
 
-// 16-byte dummy CRSF-like payload
-static const uint8_t CRSF_PAYLOAD[] = {
-    0xC8, 0x18, 0x16, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xAA
-};
+#include "protocol_packets.h"
+
+// Wire-authentic CRSF RC_CHANNELS_PACKED (type 0x16) frame built fresh
+// each transmit. 26 bytes: sync (0xC8), length (24), type (0x16), 22-byte
+// 16-channel 11-bit packed body, CRC-8/DVB-S2. Channels 1-4 mid-stick
+// (992 CRSF units), AUX switches low. Replaces the 16-byte Phase 1 dummy.
+static uint8_t  _crsfFrame[26];
+static uint16_t _crsfChannels[16];
+static bool     _crsfChannelsInit = false;
+
+static void crsfEnsureChannels() {
+    if (_crsfChannelsInit) return;
+    for (int i = 0; i < 16; ++i) _crsfChannels[i] = 992;  // center
+    // CH5 (arm switch) low so receivers see "disarmed" (172 = CRSF low limit)
+    _crsfChannels[4] = 172;
+    _crsfChannelsInit = true;
+}
+
+static size_t crsfBuildFrame() {
+    crsfEnsureChannels();
+    return build_crsf_rc_channels_packed(_crsfFrame, _crsfChannels);
+}
 
 static void crsfBuildHopSequence(uint32_t seed) {
     uint8_t numCh = CRSF_BANDS[_bandIdx].channels;
@@ -100,7 +117,7 @@ void crossfireStart() {
     _crsfRunning = true;
     _crsfLastHopUs = micros();
 
-    _radio->transmit(CRSF_PAYLOAD, sizeof(CRSF_PAYLOAD));
+    _radio->transmit(_crsfFrame, crsfBuildFrame());
     _crsfPacketCount++;
 
     Serial.printf("[CRSF-%s] %uch %.0f-%.0fMHz FSK %.1fkbps %uHz %d dBm [FOOTPRINT]\n",
@@ -152,7 +169,7 @@ void crossfireStartLoRa() {
     _crsfRunning = true;
     _crsfLastHopUs = micros();
 
-    _radio->transmit(CRSF_PAYLOAD, sizeof(CRSF_PAYLOAD));
+    _radio->transmit(_crsfFrame, crsfBuildFrame());
     _crsfPacketCount++;
 
     Serial.printf("[CRSF-%s] %uch %.0f-%.0fMHz LoRa SF7/BW500 %uHz %d dBm [FOOTPRINT, VERIFY SF/BW/CR]\n",
@@ -190,7 +207,7 @@ void crossfireUpdate() {
     _crsfCurrentMHz = nextFreq;
 
     _radio->setFrequency(nextFreq);
-    _radio->transmit(CRSF_PAYLOAD, sizeof(CRSF_PAYLOAD));
+    _radio->transmit(_crsfFrame, crsfBuildFrame());
     _crsfPacketCount++;
 }
 

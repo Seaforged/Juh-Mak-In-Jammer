@@ -9,6 +9,7 @@
 
 #include "xr1_modes.h"
 #include "xr1_driver.h"
+#include "protocol_packets.h"
 
 #include <Arduino.h>
 #include <string.h>
@@ -124,6 +125,19 @@ bool xr1ModeElrs2g4Start(uint8_t rateIdx) {
     if (!xr1SetFreq(startFreq))                                     return false;
     if (!xr1SetLoRaEx(r.sf, 812.5f, r.cr, r.preamble, true, r.payloadLen))    return false;
     if (!xr1SetPower(XR1_DEFAULT_PWR_DBM))                          return false;
+
+    // Push a wire-authentic ELRS OTA template the XR1 will roll the nonce
+    // byte on for each TX. CRC-14 is computed here with the JJ test UID;
+    // byte 0 still rolls on the XR1 so the header-byte nonce matches what
+    // a real ELRS TX produces per packet.
+    uint8_t elrsTemplate[10];
+    uint8_t nonce = 0;
+    const size_t tmplLen = build_elrs_ota_packet(elrsTemplate, r.payloadLen,
+                                                 nonce, JJ_ELRS_TEST_UID);
+    if (tmplLen == r.payloadLen) {
+        xr1SetPayload(elrsTemplate, (uint8_t)tmplLen);
+    }
+
     if (!xr1StartHopEx(channels, ELRS2G4_CHANNELS, dwellMs,
                        r.pktIntervalUs, r.hopInterval, r.payloadLen)) return false;
 
@@ -324,7 +338,7 @@ bool xr1ModeGenericStart(const Xr1GenericCfg &cfg) {
     }
     strncpy(s_status.label, "Generic 2G4 FHSS", sizeof(s_status.label));
 
-    Serial.printf("[XR1-MODE] Generic: %s %.1f-%.1fMHz (%u ch × %.2fMHz) dwell=%ums pwr=%d\n",
+    Serial.printf("[XR1-MODE] Generic: %s %.1f-%.1fMHz (%u ch x %.2fMHz) dwell=%ums pwr=%d\n",
                   s_status.modulation, startFreq, endFreq,
                   (unsigned)cfg.channelCount, cfg.spacingMhz,
                   (unsigned)cfg.dwellMs, (int)cfg.powerDbm);
