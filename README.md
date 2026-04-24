@@ -128,7 +128,7 @@ Crossfire FSK, SiK/MAVLink, DJI DroneID, and ODID BLE.
 ## Quick Start
 
 ```bash
-git clone https://github.com/seaforged-dev/Juh-Mak-In-Jammer.git
+git clone https://github.com/Seaforged/Juh-Mak-In-Jammer.git
 cd Juh-Mak-In-Jammer
 
 # Build both firmwares
