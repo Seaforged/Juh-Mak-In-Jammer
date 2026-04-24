@@ -8,6 +8,7 @@
 
 #include "xr1_radio.h"
 #include "remote_id.h"
+#include "elrs_crc14.h"
 
 // ----- constants ------------------------------------------------------------
 // Names deliberately avoid LINE_MAX / PATH_MAX / ARG_MAX etc. — POSIX headers
@@ -26,9 +27,21 @@ static size_t  s_lineLen    = 0;
 static bool    s_lineBroken = false;  // set true once we've overflowed;
                                       // cleared when the next '\n' arrives
 
-// ----- last-TX payload cache (for TXRPT) -----------------------------------
-static uint8_t s_lastPayload[XR1_PAYLOAD_MAX];
-static size_t  s_lastPayloadLen = 0;
+// ----- last-TX payload cache (for TXRPT + HOP template) --------------------
+static uint8_t  s_lastPayload[XR1_PAYLOAD_MAX];
+static size_t   s_lastPayloadLen = 0;
+// When > 0, the HOP engine uses this seed to recompute CRC-14 per nonce
+// (upstream ELRS: `crcInit = OtaCrcInitializer ^ nonce`). Set by the
+// extended PAYLOAD command. Zero means "don't recompute CRC".
+static uint16_t s_lastCrcSeed    = 0;
+static bool     s_lastCrcValid   = false;
+
+// Set by main.cpp when LR1121 init or self-test fails. When true, PING
+// responds ERR RADIO_FAIL so the T3S3 knows the XR1 is unreachable for
+// RF ops (RID-only operation would still be fine, but we keep the
+// signal coarse-grained to surface the problem loudly).
+static bool s_radioFailed = false;
+void xr1UartMarkRadioFailed() { s_radioFailed = true; }
 
 // ----- TXRPT state ----------------------------------------------------------
 static bool      s_txRptActive    = false;
@@ -88,7 +101,10 @@ static void cancelRepeatAndHop() {
 }
 
 // ----- per-command handlers ------------------------------------------------
-static void cmdPing(char *) { respondOk(); }
+static void cmdPing(char *) {
+    if (s_radioFailed) { respondErrStr("RADIO_FAIL"); return; }
+    respondOk();
+}
 
 static void cmdFreq(char *args) {
     float mhz;
@@ -154,16 +170,41 @@ static void cmdTx(char *args) {
     }
 }
 
-// PAYLOAD <hex> — cache a template that subsequent TXRPT/HOP transmits use.
-// Unlike TX, this does not transmit; it only stores. Intended for pushing
-// wire-authentic protocol frames (e.g., an ELRS OTA packet with CRC-14
-// computed on the T3S3) that the XR1 then repeats on every hop.
+// PAYLOAD <hex> [<seed_hex>] — cache a template for subsequent TXRPT/HOP
+// transmits. Unlike TX, this does not transmit; it only stores.
+//
+// Without <seed_hex>: the XR1 HOP engine rolls byte-0 (nonce) but leaves
+// the template's CRC untouched. Used for non-ELRS protocols.
+//
+// With <seed_hex> (4 hex chars = uint16 seed): the XR1 HOP engine, on
+// each TX, rolls byte-0 and recomputes CRC-14 over bytes [0..N-3] with
+// crcInit = seed XOR nonce (upstream ExpressLRS OtaCrcInitializer formula).
+// This makes every packet in the nonce cycle carry a valid CRC instead of
+// only nonce=0's CRC — closing the ELRS 2.4 GHz L4 content gap.
 static void cmdPayload(char *args) {
+    // Split optional seed off the end.
+    char *space = strchr(args, ' ');
+    uint16_t seed   = 0;
+    bool     hasSeed = false;
+    if (space) {
+        *space = '\0';
+        char *seedStr = space + 1;
+        while (*seedStr == ' ' || *seedStr == '\t') ++seedStr;
+        if (*seedStr) {
+            unsigned s = 0;
+            if (sscanf(seedStr, "%x", &s) != 1) { respondErrStr("PARSE"); return; }
+            seed = (uint16_t)(s & 0xFFFF);
+            hasSeed = true;
+        }
+    }
+
     uint8_t buf[XR1_PAYLOAD_MAX];
     const int n = decodeHex(args, buf, XR1_PAYLOAD_MAX);
     if (n <= 0) { respondErrStr("PARSE"); return; }
     memcpy(s_lastPayload, buf, n);
     s_lastPayloadLen = n;
+    s_lastCrcSeed    = seed;
+    s_lastCrcValid   = hasSeed;
     respondOk();
 }
 
@@ -214,7 +255,14 @@ static void cmdHop(char *args) {
     uint8_t count = 0;
     char *chanSave = nullptr;
     char *tok = strtok_r(parts[0], ",", &chanSave);
-    while (tok && count < XR1_HOP_MAX_CH) {
+    while (tok) {
+        if (count >= XR1_HOP_MAX_CH) {
+            // Too many channels — reject the whole command rather than
+            // silently truncating. The caller is responsible for keeping
+            // within XR1_HOP_MAX_CH (80).
+            respondErrStr("TOO_MANY_CHANNELS");
+            return;
+        }
         float f;
         if (sscanf(tok, "%f", &f) != 1) { respondErrStr("PARSE"); return; }
         s_hopChannels[count++] = f;
@@ -271,9 +319,15 @@ static void cmdLed(char *args) {
 // string. Example: "WIFI JJ-XR1-TEST-001 36.8529 -75.9780 120.0 5.0 270.0".
 // Sub-verb is the first word; the remainder parses per-verb.
 static bool parseRidArgs(char *s, RemoteIdState &out) {
-    float lat = 0, lon = 0, alt = 0, spd = 0, hdg = 0;
+    // Lat/lon parse as double (%lf) — float's 7-digit precision is
+    // marginal for degree-level GPS coordinates and would truncate the
+    // sub-meter accuracy the ODID/DJI encoders preserve downstream.
+    // Altitude/speed/heading stay as float (they encode to int16 anyway).
+    double lat = 0.0, lon = 0.0;
+    float  alt = 0, spd = 0, hdg = 0;
     char serial[32] = { 0 };
-    int  n = sscanf(s, "%31s %f %f %f %f %f", serial, &lat, &lon, &alt, &spd, &hdg);
+    int  n = sscanf(s, "%31s %lf %lf %f %f %f",
+                    serial, &lat, &lon, &alt, &spd, &hdg);
     if (n != 6) return false;
     strncpy(out.serial, serial, sizeof(out.serial) - 1);
     out.serial[sizeof(out.serial) - 1] = '\0';
@@ -335,9 +389,10 @@ static void cmdRid(char *args) {
         // fields first, then grab the model off the tail.
         RemoteIdState s;
         char modelStr[16] = { 0 };
-        float lat, lon, alt, spd, hdg;
+        double lat, lon;
+        float alt, spd, hdg;
         char serial[32];
-        int n = sscanf(rest, "%31s %f %f %f %f %f %15s",
+        int n = sscanf(rest, "%31s %lf %lf %f %f %f %15s",
                        serial, &lat, &lon, &alt, &spd, &hdg, modelStr);
         if (n != 7) { respondErrStr("PARSE"); return; }
         strncpy(s.serial, serial, sizeof(s.serial) - 1);
@@ -435,9 +490,23 @@ static void tickHop(uint32_t now) {
             if (useCached) {
                 memcpy(payload, s_lastPayload, s_hopPayloadLen);
                 // Nonce-roll byte 0 lower 6 bits (ELRS OTA header layout).
-                payload[0] = (uint8_t)((payload[0] & 0xC0)
-                                       | (s_hopSeq & 0x3F));
+                const uint8_t nonce = (uint8_t)(s_hopSeq & 0x3F);
+                payload[0] = (uint8_t)((payload[0] & 0xC0) | nonce);
                 s_hopSeq++;
+
+                // If the T3S3 pushed a CRC seed with PAYLOAD, recompute
+                // CRC-14 over bytes [0..N-3] using crcInit = seed ^ nonce
+                // (matching ExpressLRS OTA per-packet CRC init). Write the
+                // 14-bit result back into the last two bytes in the same
+                // big-endian layout the T3S3 builder used.
+                if (s_lastCrcValid && s_hopPayloadLen >= 3) {
+                    const uint16_t crcInit = (uint16_t)(s_lastCrcSeed ^ nonce);
+                    const uint16_t crc     = elrs_crc14(payload,
+                                                        s_hopPayloadLen - 2,
+                                                        crcInit);
+                    payload[s_hopPayloadLen - 2] = (uint8_t)((crc >> 6) & 0xFF);
+                    payload[s_hopPayloadLen - 1] = (uint8_t)((crc << 2) & 0xFC);
+                }
             } else {
                 for (uint8_t i = 0; i < s_hopPayloadLen; ++i) {
                     payload[i] = kHopTemplate[i % sizeof(kHopTemplate)];

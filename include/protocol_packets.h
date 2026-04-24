@@ -45,6 +45,14 @@ size_t build_crsf_rc_channels_packed(uint8_t *out, const uint16_t channels[16]);
 size_t build_mavlink_heartbeat_v2(uint8_t *out, uint8_t &seq,
                                   uint8_t sysid = 1, uint8_t compid = 1);
 
+// MAVLink v2 SYS_STATUS (msgid 1) — battery voltage (mV, default 12.6 V),
+// current draw (-1 = unknown), remaining percent (default 75), and
+// sensor presence/health bitmasks. Lets a SiK-aware receiver see the
+// protocol's typical mixed-message traffic instead of only HEARTBEAT.
+// Returns the frame length (42 bytes for a 31-byte payload).
+size_t build_mavlink_sys_status_v2(uint8_t *out, uint8_t &seq,
+                                   uint8_t sysid = 1, uint8_t compid = 1);
+
 // Build an ExpressLRS OTA LoRa packet matching the 8-byte or 10-byte air
 // rate modes. `payloadLen` must be 8 or 10. The first byte encodes the
 // FHSS sync phase (upper 2 bits) + nonce (lower 6 bits); channel data

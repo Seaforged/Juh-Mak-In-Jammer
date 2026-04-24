@@ -20,6 +20,10 @@
 //   STATUS                        -> OK <freq> <mod> <pwr> <state>
 //   RESET                         -> OK  (then radio re-inits)
 //   LED   <0|1|2|3|4>             -> OK
+//   PAYLOAD <hex> [<seed_hex>]    -> OK
+//        Cache a TX template for TXRPT/HOP. With optional 4-char hex seed,
+//        the HOP engine recomputes ELRS CRC-14 per nonce on every TX:
+//        crcInit = seed XOR (byte0 & 0x3F), matching ExpressLRS upstream.
 // ============================================================================
 
 void xr1UartInit();
@@ -31,3 +35,9 @@ void xr1UartUpdate();
 // True when the loop should avoid long sleeps because a high-rate TX state
 // machine is running (ELRS-style hopping or tight TXRPT intervals).
 bool xr1UartNeedsFastLoop();
+
+// Called by main.cpp when xr1RadioBegin() or the self-test fails so the
+// parser can respond `ERR RADIO_FAIL` to PING. Without this the T3S3
+// would see a healthy PING response and proceed to configure a dead
+// radio.
+void xr1UartMarkRadioFailed();

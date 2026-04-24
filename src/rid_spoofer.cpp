@@ -38,8 +38,20 @@ static uint32_t _wifiCount = 0;
 static uint32_t _bleCount = 0;
 static bool _wifiReady = false;
 static bool _bleReady = false;
-static bool _bleAdvRunning = false;
-static bool _bleAdvStartPending = false;
+static volatile bool _bleAdvConfigPending = false;
+static volatile bool _bleAdvRunning = false;
+static volatile bool _bleAdvStartPending = false;
+
+static esp_ble_adv_params_t _bleAdvParams = {
+    .adv_int_min       = 0x20,
+    .adv_int_max       = 0x40,
+    .adv_type          = ADV_TYPE_NONCONN_IND,
+    .own_addr_type     = BLE_ADDR_TYPE_RANDOM,
+    .peer_addr         = { 0 },
+    .peer_addr_type    = BLE_ADDR_TYPE_PUBLIC,
+    .channel_map       = ADV_CHNL_ALL,
+    .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
+};
 
 // TX timing — send one burst per second (WiFi + BLE)
 static unsigned long _lastTxMs = 0;
@@ -290,6 +302,7 @@ static const uint8_t BLE4_ODID_MSG_SIZE = 23;
 static void bleGapCallback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
     switch (event) {
         case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
+            _bleAdvConfigPending = false;
             if (param->adv_data_raw_cmpl.status != ESP_BT_STATUS_SUCCESS) {
                 Serial.printf("RID: BLE raw adv config failed: %d\n",
                               (int)param->adv_data_raw_cmpl.status);
@@ -297,17 +310,8 @@ static void bleGapCallback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t 
                 break;
             }
             if (_bleAdvStartPending && _ridRunning && !_bleAdvRunning) {
-                esp_ble_adv_params_t adv_params = {};
-                adv_params.adv_int_min = 0x20;  // 20ms
-                adv_params.adv_int_max = 0x40;  // 40ms
-                adv_params.adv_type = ADV_TYPE_NONCONN_IND;
-                adv_params.own_addr_type = BLE_ADDR_TYPE_RANDOM;
-                adv_params.channel_map = ADV_CHNL_ALL;
-                if (esp_ble_gap_start_advertising(&adv_params) != ESP_OK) {
-                    Serial.println("RID: BLE adv start request failed");
-                }
+                _bleAdvStartPending = true;
             }
-            _bleAdvStartPending = false;
             break;
         case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
             if (param->adv_start_cmpl.status != ESP_BT_STATUS_SUCCESS) {
@@ -377,6 +381,15 @@ static void bleInit() {
 
 static void bleTransmitOdid() {
     if (!_bleReady) return;
+    if (_bleAdvStartPending) {
+        _bleAdvStartPending = false;
+        if (esp_ble_gap_start_advertising(&_bleAdvParams) != ESP_OK) {
+            Serial.println("RID: BLE adv start request failed");
+            _bleAdvRunning = false;
+        }
+        return;
+    }
+    if (_bleAdvConfigPending) return;
 
     // Build BLE advertising data with a rotating ASTM F3411 ODID message.
     // BLE ODID format: AD struct with type 0x16 (Service Data)
@@ -406,8 +419,10 @@ static void bleTransmitOdid() {
 
     if (!_bleAdvRunning) _bleAdvStartPending = true;
     if (esp_ble_gap_config_adv_data_raw(_bleAdvData, pos) == ESP_OK) {
+        _bleAdvConfigPending = true;
         _bleCount++;
     } else {
+        _bleAdvConfigPending = false;
         _bleAdvStartPending = false;
         Serial.println("RID: BLE raw adv config request failed");
     }
@@ -455,6 +470,7 @@ void ridStart() {
     memset(_bleAdCounters, 0, sizeof(_bleAdCounters));
     _bleRotation = 0;
     _bleAdvRunning = false;
+    _bleAdvConfigPending = false;
     _bleAdvStartPending = false;
     _ridRunning = true;
     _lastTxMs = millis();
@@ -466,6 +482,7 @@ void ridStart() {
 
 void ridStop() {
     _ridRunning = false;
+    _bleAdvConfigPending = false;
     _bleAdvStartPending = false;
 
     if (_bleReady && _bleAdvRunning) {

@@ -20,7 +20,7 @@ struct CombinedParams {
 
 // --- Public API ---
 void combinedInit(SX1262 *radio);
-void combinedStart();
+bool combinedStart();
 void combinedStop();
 void combinedUpdate();           // call from loop() — updates RID on Core 0
 CombinedParams combinedGetParams();

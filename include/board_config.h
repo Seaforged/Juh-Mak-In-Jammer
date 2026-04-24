@@ -28,6 +28,12 @@
 #define LED_PIN     37
 #define BOOT_BTN    0    // Menu navigation button
 
+// --- XR1 UART link (Phase 3) ---
+// T3S3 side: Serial1 on these pins, 115200 8N1. Cross-wired to the XR1's
+// UART0 (GPIO 20 RX / GPIO 21 TX) through the physical harness.
+#define XR1_UART_TX_PIN  43    // T3S3 TX -> XR1 GPIO 20 (RX)
+#define XR1_UART_RX_PIN  44    // T3S3 RX <- XR1 GPIO 21 (TX)
+
 // --- Board Identification ---
 #define BOARD_NAME  "LilyGo T3S3"
 

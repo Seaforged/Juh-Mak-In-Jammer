@@ -1,13 +1,13 @@
 // ============================================================================
-// JJ XR1 Firmware — Phase 1 Hello Hardware
+// JJ XR1 Firmware
 //
-// Runs on the ESP32C3 inside a RadioMaster XR1. Responsibilities for this
-// phase are deliberately small: bring up the LR1121, prove sub-GHz and
-// 2.4 GHz paths work, and print "XR1 READY" so Phase 2 (UART command
-// protocol) has a known-good starting point.
+// Runs on the ESP32C3 inside a RadioMaster XR1. Brings up the LR1121 radio,
+// runs a two-band self-test, then hands control to the UART command parser
+// (xr1_uart.cpp) and the Remote ID transport stacks (remote_id_*.cpp).
 //
-// Part of the Juh-Mak-In Jammer v3.0 three-emitter architecture. See
-// docs/JJ_XR1_Phased_Development_Plan.md for the full roadmap.
+// Part of the Juh-Mak-In Jammer v3.0 three-emitter architecture
+// (T3S3 SX1262 + XR1 LR1121 + XR1 WiFi/BLE). See docs/JJ_v3_Consolidated_
+// Roadmap.md for the full architecture.
 // ============================================================================
 
 #include <Arduino.h>
@@ -24,7 +24,7 @@ static void printBanner() {
     Serial.printf ("  %s\n", XR1_FW_VERSION);
     Serial.printf ("  Built: %s\n", XR1_FW_BUILD_DATE);
     Serial.println("  Target: RadioMaster XR1 (ESP32C3 + LR1121)");
-    Serial.println("  Phase 1: Hello Hardware");
+    Serial.println("  JJ v3 XR1 (LR1121 + WiFi + BLE)");
     Serial.println("================================================");
 }
 
@@ -44,27 +44,34 @@ void setup() {
 
     printBanner();
 
-    if (!xr1RadioBegin()) {
-        Serial.println("[XR1] FATAL: radio init failed -- halting.");
-        return;
-    }
-
-    const Xr1RadioStatus &st = xr1RadioGetStatus();
-    if (st.hwVersion != 0) {
-        Serial.printf("[XR1] LR1121 version: 0x%08lX\n",
-                      (unsigned long)st.hwVersion);
+    const bool radioOk = xr1RadioBegin();
+    if (!radioOk) {
+        Serial.println("[XR1] FATAL: radio init failed -- continuing in degraded "
+                       "mode so PING can report RADIO_FAIL to the T3S3.");
     } else {
-        Serial.println("[XR1] LR1121 version: (not read -- RadioLib variant)");
+        const Xr1RadioStatus &st = xr1RadioGetStatus();
+        if (st.hwVersion != 0) {
+            Serial.printf("[XR1] LR1121 version: 0x%08lX\n",
+                          (unsigned long)st.hwVersion);
+        } else {
+            Serial.println("[XR1] LR1121 version: (not read -- RadioLib variant)");
+        }
     }
 
-    if (!xr1RadioHelloSelfTest()) {
+    const bool selfTestOk = radioOk && xr1RadioHelloSelfTest();
+    if (radioOk && !selfTestOk) {
         Serial.println("[XR1] Self-test FAILED. Check SPI + RF switch wiring.");
-        return;
     }
 
     xr1UartInit();
-    remoteIdInit();     // NVS + esp_netif — stacks spin up lazily on first RID start
-    Serial.println("XR1 READY");
+    if (!radioOk || !selfTestOk) {
+        // Mark the UART parser so PING returns ERR RADIO_FAIL instead of
+        // cheerfully pretending everything's OK.
+        xr1UartMarkRadioFailed();
+    }
+    remoteIdInit();     // NVS + esp_netif — RID still works even if LR1121 is dead
+    Serial.println(radioOk && selfTestOk ? "XR1 READY"
+                                         : "XR1 READY (RADIO_FAIL)");
 }
 
 void loop() {

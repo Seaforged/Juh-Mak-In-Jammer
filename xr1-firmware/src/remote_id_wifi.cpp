@@ -41,12 +41,24 @@ static bool bringUpWifiIfNeeded() {
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     if (esp_wifi_init(&cfg) != ESP_OK)                                return false;
-    if (esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK)             return false;
-    if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK)                   return false;
+    if (esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK) {
+        esp_wifi_deinit();
+        return false;
+    }
+    if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) {
+        esp_wifi_deinit();
+        return false;
+    }
     // Enable 11b/g/n so beacon TX works on channels 1/6/11.
-    esp_wifi_set_protocol(WIFI_IF_STA,
-        WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
-    if (esp_wifi_start() != ESP_OK)                                   return false;
+    if (esp_wifi_set_protocol(WIFI_IF_STA,
+        WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N) != ESP_OK) {
+        esp_wifi_deinit();
+        return false;
+    }
+    if (esp_wifi_start() != ESP_OK) {
+        esp_wifi_deinit();
+        return false;
+    }
     s_wifiStackUp = true;
     return true;
 }
@@ -219,6 +231,7 @@ static void rebuildFrame() {
 // ODID and DJI share it so they don't fight over esp_wifi_set_channel. We
 // just transmit on whatever channel the controller has picked.
 static uint32_t s_lastTxMs = 0;
+static uint8_t  s_consecutiveTxFails = 0;
 
 // Called from remoteIdUpdate().
 extern "C" void ridWifiTick() {
@@ -230,7 +243,16 @@ extern "C" void ridWifiTick() {
     rebuildFrame();
     if (s_frameLen == 0) return;
     if (esp_wifi_80211_tx(WIFI_IF_STA, s_frame, s_frameLen, true) == ESP_OK) {
+        s_consecutiveTxFails = 0;
         ++g_ridStatus.wifiFrameCount;
+    } else if (s_consecutiveTxFails < 10) {
+        ++s_consecutiveTxFails;
+        if (s_consecutiveTxFails >= 10) {
+            g_ridStatus.wifiActive = false;
+            s_consecutiveTxFails = 0;
+            ridWifiRefDown();
+            Serial.println("[XR1-RID] WiFi TX failed 10x -- transport disabled");
+        }
     }
 }
 
@@ -261,6 +283,7 @@ bool remoteIdWifiStart(const RemoteIdState &state) {
     // Channel selection is owned by the unified controller in
     // remote_id_common.cpp; no set_channel call here (see H1 fix).
     s_lastTxMs = 0;
+    s_consecutiveTxFails = 0;
 
     g_ridStatus.wifiActive      = true;
     g_ridStatus.wifiFrameCount  = 0;
@@ -273,6 +296,7 @@ bool remoteIdWifiStart(const RemoteIdState &state) {
 void remoteIdWifiStop() {
     if (!g_ridStatus.wifiActive) return;
     g_ridStatus.wifiActive = false;
+    s_consecutiveTxFails = 0;
     ridWifiRefDown();
     Serial.printf("[XR1-RID] WiFi beacon OFF (%u frames sent)\n",
                   (unsigned)g_ridStatus.wifiFrameCount);

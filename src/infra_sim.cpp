@@ -2,6 +2,7 @@
 #include "infra_sim.h"
 #include "rf_modes.h"       // for rfGetPower()
 #include "protocol_params.h"
+#include "system_health.h"
 
 // ============================================================
 // Infrastructure False Positive Simulation — v2 ref §4.2-4.4
@@ -238,6 +239,7 @@ void infraInit(SX1262 *radio) {
 
 void infraStart(InfraMode mode) {
     if (!_radio) return;
+    if (!sx1262ModeAvailable()) return;
 
     _mode = mode;
     _packetCount = 0;

@@ -126,16 +126,20 @@ bool xr1ModeElrs2g4Start(uint8_t rateIdx) {
     if (!xr1SetLoRaEx(r.sf, 812.5f, r.cr, r.preamble, true, r.payloadLen))    return false;
     if (!xr1SetPower(XR1_DEFAULT_PWR_DBM))                          return false;
 
-    // Push a wire-authentic ELRS OTA template the XR1 will roll the nonce
-    // byte on for each TX. CRC-14 is computed here with the JJ test UID;
-    // byte 0 still rolls on the XR1 so the header-byte nonce matches what
-    // a real ELRS TX produces per packet.
+    // Push a wire-authentic ELRS OTA template, plus the CRC-14 seed so the
+    // XR1 recomputes CRC per nonce on every TX (upstream ExpressLRS
+    // OtaCrcInitializer formula). Without the seed, only the first nonce's
+    // CRC would be valid — 63/64 packets would fail receiver CRC check.
     uint8_t elrsTemplate[10];
     uint8_t nonce = 0;
     const size_t tmplLen = build_elrs_ota_packet(elrsTemplate, r.payloadLen,
                                                  nonce, JJ_ELRS_TEST_UID);
+    const uint16_t crcSeed = elrs_crc14_seed_from_uid(JJ_ELRS_TEST_UID);
     if (tmplLen == r.payloadLen) {
-        xr1SetPayload(elrsTemplate, (uint8_t)tmplLen);
+        if (!xr1SetPayload(elrsTemplate, (uint8_t)tmplLen, crcSeed)) {
+            Serial.println("[XR1-MODE] WARNING: PAYLOAD template failed, "
+                           "using synthetic fallback");
+        }
     }
 
     if (!xr1StartHopEx(channels, ELRS2G4_CHANNELS, dwellMs,

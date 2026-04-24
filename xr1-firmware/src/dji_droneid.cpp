@@ -154,7 +154,22 @@ static void buildDjiPayload(uint8_t *p /*79 bytes*/) {
     p[0] = DJI_OUI_TYPE;
     p[3] = 0x10;                         // subcommand: flight telemetry
     putU16le(p + 5, s_seq++);            // sequence
-    putU16le(p + 7, 0x0FFF);             // state_info: all valid flags
+
+    // state_info bitfield (non-static so behavioural analysers see the
+    // toggles a real DJI drone exhibits in flight):
+    //   bit 0  = GPS valid (on when lat/lon nonzero)
+    //   bit 4  = motors running (always on — we're "in flight")
+    //   bit 8  = home point set (periodically re-set every 10 s to simulate
+    //            the GPS/home-update churn real firmware does)
+    uint16_t stateInfo = 0x0FFF;
+    const bool gpsValid = (s_state.latitude != 0.0 || s_state.longitude != 0.0);
+    if (gpsValid) stateInfo |=  (1u << 0); else stateInfo &= (uint16_t)~(1u << 0);
+    stateInfo |= (1u << 4);                                       // motors on
+    // 10 s cycle: for 1 s at the top of each cycle clear bit 8, then re-set.
+    const uint32_t cyclePhase = (millis() % 10000);
+    if (cyclePhase < 1000) stateInfo &= (uint16_t)~(1u << 8);
+    else                   stateInfo |=  (1u << 8);
+    putU16le(p + 7, stateInfo);
 
     strncpy((char *)(p + 9), s_state.serial, 16);
 
@@ -224,6 +239,7 @@ static void rebuildFrame() {
 // Channel rotation is owned by the unified controller in remote_id_common.cpp
 // so ODID and DJI don't race each other on esp_wifi_set_channel.
 static uint32_t s_lastTxMs = 0;
+static uint8_t  s_consecutiveTxFails = 0;
 
 extern "C" void ridDjiTick() {
     if (!g_ridStatus.djiActive) return;
@@ -234,7 +250,16 @@ extern "C" void ridDjiTick() {
     rebuildFrame();
     if (s_frameLen == 0) return;
     if (esp_wifi_80211_tx(WIFI_IF_STA, s_frame, s_frameLen, true) == ESP_OK) {
+        s_consecutiveTxFails = 0;
         ++g_ridStatus.djiFrameCount;
+    } else if (s_consecutiveTxFails < 10) {
+        ++s_consecutiveTxFails;
+        if (s_consecutiveTxFails >= 10) {
+            g_ridStatus.djiActive = false;
+            s_consecutiveTxFails = 0;
+            ridWifiRefDown();
+            Serial.println("[XR1-RID] DJI TX failed 10x -- transport disabled");
+        }
     }
 }
 
@@ -272,6 +297,7 @@ bool djiDroneIdStart(const RemoteIdState &state, uint16_t modelCode) {
     // Channel selection is owned by the unified controller in
     // remote_id_common.cpp; no set_channel call here (see H1 fix).
     s_lastTxMs = 0;
+    s_consecutiveTxFails = 0;
 
     g_ridStatus.djiActive     = true;
     g_ridStatus.djiFrameCount = 0;
@@ -283,6 +309,7 @@ bool djiDroneIdStart(const RemoteIdState &state, uint16_t modelCode) {
 void djiDroneIdStop() {
     if (!g_ridStatus.djiActive) return;
     g_ridStatus.djiActive = false;
+    s_consecutiveTxFails = 0;
     ridWifiRefDown();
     Serial.printf("[XR1-RID] DJI DroneID OFF (%u frames sent)\n",
                   (unsigned)g_ridStatus.djiFrameCount);

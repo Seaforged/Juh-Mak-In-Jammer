@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "rf_modes.h"
 #include "protocol_params.h"
+#include "system_health.h"
 
 // ============================================================
 // CW Tone Generator — continuous carrier via SX1262
@@ -48,6 +49,7 @@ void cwInit(SX1262 *radio) {
 
 void cwStart() {
     if (!_radio) return;
+    if (!sx1262ModeAvailable()) return;
 
     // Full reset + begin ensures clean state from any prior mode
     _radio->standby();
@@ -128,6 +130,7 @@ static uint16_t sweepTotalSteps() {
 
 void sweepStart() {
     if (!_radio) return;
+    if (!sx1262ModeAvailable()) return;
 
     // Full reset ensures clean state when switching from LoRa/FSK modes
     _radio->standby();
@@ -340,6 +343,7 @@ static void elrsBuildHopSequence(uint32_t seed) {
 
 bool elrsStart() {
     if (!_radio) return false;
+    if (!sx1262ModeAvailable()) return false;
 
     const ElrsDomain&  dom  = *_elrsDomain;
     const ElrsAirRate& rate = *_elrsRate;
@@ -417,6 +421,7 @@ bool elrsStart() {
 // Transmits on sync channel at 1 Hz for 10 seconds, then transitions to FHSS
 bool elrsStartBinding() {
     if (!_radio) return false;
+    if (!sx1262ModeAvailable()) return false;
 
     const ElrsDomain&  dom  = *_elrsDomain;
     const ElrsAirRate& rate = *_elrsRate;
@@ -439,7 +444,8 @@ bool elrsStartBinding() {
     }
 
     // Binding phase always sends the 8-byte beacon; implicit header length
-    // matches ELRS_PAYLOAD_8. On transition to connected FHSS below, the
+    // matches the elrsNextPayload() 8-byte variant. On transition to
+    // connected FHSS below, the
     // header length is re-set to rate.payloadLen if the rate uses 10 bytes.
     _radio->implicitHeader(8);
     _radio->setCurrentLimit(140.0);

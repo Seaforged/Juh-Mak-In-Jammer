@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "power_ramp.h"
 #include "protocol_params.h"
+#include "system_health.h"
 
 // ============================================================
 // Power Ramp — drone approach simulation via ELRS FHSS
@@ -69,6 +70,7 @@ void powerRampInit(SX1262 *radio) {
 
 void powerRampStart() {
     if (!_radio) return;
+    if (!sx1262ModeAvailable()) return;
 
     buildHopSequence();
     _hopIdx = 0;

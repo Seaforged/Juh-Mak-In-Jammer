@@ -46,13 +46,21 @@ bool combinedScenarioRacing() {
     elrsSetRate(ELRS_RATE_200HZ);
     elrsSetDomain(ELRS_DOMAIN_FCC915);
     if (!elrsStart())                                   return false;
+    if (!elrsGetParams().running)                       { elrsStop(); return false; }
     if (!xr1ModeElrs2g4Start(0))                       { elrsStop(); return false; }
     const bool ridOk = xr1RidStart(XR1_RID_WIFI | XR1_RID_BLE);
     if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed -- running without RID");
 
+    // Query actual per-transport activeMask so a partial start (e.g. WiFi
+    // OK but BLE stack init failed) reflects truthfully rather than the
+    // single ridOk gating every flag.
+    const Xr1RidStatus rs = xr1RidGetStatus();
+    const bool wifiOk = (rs.activeMask & XR1_RID_WIFI) != 0;
+    const bool bleOk  = (rs.activeMask & XR1_RID_BLE)  != 0;
+
     s_status = { COMBINED_RACING, "Racing Drone",
                  true, true,
-                 ridOk, ridOk, false,
+                 wifiOk, bleOk, false,
                  "ELRS 200Hz", "ELRS 2.4G 500Hz" };
     printBanner("Racing Drone",
                 "ELRS-FCC915 40ch SF6/BW500 200Hz implicit 0x12 | 10 dBm",
@@ -68,10 +76,13 @@ bool combinedScenarioDji() {
     if (!xr1ModeDjiEnergyStart())                       return false;
     const bool ridOk = xr1RidStart(XR1_RID_DJI | XR1_RID_BLE);
     if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed -- running without RID");
+    const Xr1RidStatus rs = xr1RidGetStatus();
+    const bool bleOk = (rs.activeMask & XR1_RID_BLE) != 0;
+    const bool djiOk = (rs.activeMask & XR1_RID_DJI) != 0;
 
     s_status = { COMBINED_DJI, "DJI Consumer",
                  false, true,
-                 false, ridOk, ridOk,
+                 false, bleOk, djiOk,
                  "idle", "DJI energy" };
     printBanner("DJI Consumer",
                 nullptr,
@@ -85,11 +96,15 @@ bool combinedScenarioDji() {
 bool combinedScenarioLongRange() {
     combinedScenarioStop();
     crossfireStart();   // Crossfire FSK 150 Hz @ 915
+    if (!crossfireGetParams().running)                  return false;
     const bool ridOk = xr1RidStart(XR1_RID_WIFI | XR1_RID_BLE);
     if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed -- running without RID");
+    const Xr1RidStatus rs = xr1RidGetStatus();
+    const bool wifiOk = (rs.activeMask & XR1_RID_WIFI) != 0;
+    const bool bleOk  = (rs.activeMask & XR1_RID_BLE)  != 0;
 
     s_status = { COMBINED_LONGRANGE, "Long Range FPV",
-                 true, false, ridOk, ridOk, false,
+                 true, false, wifiOk, bleOk, false,
                  "CRSF 915 FSK", "idle" };
     printBanner("Long Range FPV",
                 "Crossfire-915 FSK 85kbps ~150Hz | 10 dBm",
@@ -104,6 +119,7 @@ bool combinedScenarioDualBand() {
     elrsSetRate(ELRS_RATE_200HZ);
     elrsSetDomain(ELRS_DOMAIN_FCC915);
     if (!elrsStart())                                   return false;
+    if (!elrsGetParams().running)                       { elrsStop(); return false; }
     if (!xr1ModeElrs2g4Start(0))                       { elrsStop(); return false; }
 
     s_status = { COMBINED_DUALBAND, "Dual-Band ELRS",
@@ -122,12 +138,17 @@ bool combinedScenarioEverything() {
     elrsSetRate(ELRS_RATE_200HZ);
     elrsSetDomain(ELRS_DOMAIN_FCC915);
     if (!elrsStart())                                   return false;
+    if (!elrsGetParams().running)                       { elrsStop(); return false; }
     if (!xr1ModeElrs2g4Start(0))                       { elrsStop(); return false; }
     const bool ridOk = xr1RidStart(XR1_RID_ALL);    // WiFi ODID + BLE ODID + DJI DroneID
     if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed -- running without RID");
+    const Xr1RidStatus rs = xr1RidGetStatus();
+    const bool wifiOk = (rs.activeMask & XR1_RID_WIFI) != 0;
+    const bool bleOk  = (rs.activeMask & XR1_RID_BLE)  != 0;
+    const bool djiOk  = (rs.activeMask & XR1_RID_DJI)  != 0;
 
     s_status = { COMBINED_EVERYTHING, "Everything",
-                 true, true, ridOk, ridOk, ridOk,
+                 true, true, wifiOk, bleOk, djiOk,
                  "ELRS 200Hz", "ELRS 2.4G 500Hz" };
     printBanner("Everything",
                 "ELRS-FCC915 40ch SF6/BW500 200Hz implicit 0x12 | 10 dBm",

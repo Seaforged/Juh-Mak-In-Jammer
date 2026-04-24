@@ -2,6 +2,7 @@
 #include "crossfire.h"
 #include "rf_modes.h"  // for rfGetPower()
 #include "protocol_params.h"
+#include "system_health.h"
 
 // ============================================================
 // TBS Crossfire — dual-modulation (FSK 150 Hz + LoRa 50 Hz),
@@ -83,6 +84,7 @@ void crossfireSetBand(uint8_t bandIdx) {
 // --- FSK 150 Hz mode (existing behavior) ---
 void crossfireStart() {
     if (!_radio) return;
+    if (!sx1262ModeAvailable()) return;
 
     _loRaMode = false;
     const CrossfireBand& band = CRSF_BANDS[_bandIdx];
@@ -117,7 +119,7 @@ void crossfireStart() {
     _crsfRunning = true;
     _crsfLastHopUs = micros();
 
-    _radio->transmit(_crsfFrame, crsfBuildFrame());
+    _radio->startTransmit(_crsfFrame, crsfBuildFrame());
     _crsfPacketCount++;
 
     Serial.printf("[CRSF-%s] %uch %.0f-%.0fMHz FSK %.1fkbps %uHz %d dBm [FOOTPRINT]\n",
@@ -129,6 +131,7 @@ void crossfireStart() {
 // --- LoRa 50 Hz mode (new) ---
 void crossfireStartLoRa() {
     if (!_radio) return;
+    if (!sx1262ModeAvailable()) return;
 
     _loRaMode = true;
     const CrossfireBand& band = CRSF_BANDS[_bandIdx];
@@ -169,7 +172,7 @@ void crossfireStartLoRa() {
     _crsfRunning = true;
     _crsfLastHopUs = micros();
 
-    _radio->transmit(_crsfFrame, crsfBuildFrame());
+    _radio->startTransmit(_crsfFrame, crsfBuildFrame());
     _crsfPacketCount++;
 
     Serial.printf("[CRSF-%s] %uch %.0f-%.0fMHz LoRa SF7/BW500 %uHz %d dBm [FOOTPRINT, VERIFY SF/BW/CR]\n",
@@ -207,7 +210,7 @@ void crossfireUpdate() {
     _crsfCurrentMHz = nextFreq;
 
     _radio->setFrequency(nextFreq);
-    _radio->transmit(_crsfFrame, crsfBuildFrame());
+    _radio->startTransmit(_crsfFrame, crsfBuildFrame());
     _crsfPacketCount++;
 }
 

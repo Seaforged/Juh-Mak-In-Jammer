@@ -2,6 +2,7 @@
 #include "false_positive.h"
 #include "rf_modes.h"   // for rfGetPower()
 #include "protocol_params.h"
+#include "system_health.h"
 
 // ============================================================
 // False Positive Generator — LoRaWAN, ISM bursts, and Mixed
@@ -244,6 +245,7 @@ void fpInit(SX1262 *radio) {
 
 void fpStart(FpMode mode) {
     if (!_radio) return;
+    if (!sx1262ModeAvailable()) return;
 
     _fpMode = mode;
     _loraCount = 0;

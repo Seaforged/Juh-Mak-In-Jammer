@@ -61,13 +61,12 @@ uint16_t elrs_crc14(const uint8_t *data, size_t len, uint16_t seed) {
     return crc;
 }
 
-// ExpressLRS UID -> CRC-14 seed. The upstream formula mixes the four
-// low-order UID bytes via a CRC-14 over them starting from 0. This gives
-// each binding a unique seed so CRCs can't cross-validate between TX/RX
-// pairs. Source: ExpressLRS OtaUpdateCrcInitFromUid().
+// ExpressLRS UID -> CRC-14 seed. Upstream formula (OTA.cpp
+// OtaUpdateCrcInitFromUid): OtaCrcInitializer = (UID[4] << 8) | UID[5].
+// Per-packet, the actual CRC init is `OtaCrcInitializer ^ nonceValidator`
+// where nonceValidator is the packet nonce byte — see build_elrs_ota_packet.
 uint16_t elrs_crc14_seed_from_uid(const uint8_t uid[6]) {
-    uint8_t seedBytes[4] = { uid[2], uid[3], uid[4], uid[5] };
-    return elrs_crc14(seedBytes, 4, 0) ^ 0x0001u;
+    return ((uint16_t)uid[4] << 8) | uid[5];
 }
 
 const uint8_t JJ_ELRS_TEST_UID[6] = { 0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02 };
@@ -121,7 +120,8 @@ size_t build_crsf_rc_channels_packed(uint8_t *out, const uint16_t channels[16]) 
 //             u8  system_status   (4 = ACTIVE)
 //             u8  mavlink_version (3)
 //   [19..20] CRC-16 X.25 over bytes [1..18] + CRC_EXTRA (50 for HEARTBEAT)
-static constexpr uint8_t MAVLINK_HEARTBEAT_CRC_EXTRA = 50;
+static constexpr uint8_t MAVLINK_HEARTBEAT_CRC_EXTRA  = 50;
+static constexpr uint8_t MAVLINK_SYS_STATUS_CRC_EXTRA = 124;  // per MAVLink crc_extra table
 
 size_t build_mavlink_heartbeat_v2(uint8_t *out, uint8_t &seq,
                                   uint8_t sysid, uint8_t compid) {
@@ -147,6 +147,48 @@ size_t build_mavlink_heartbeat_v2(uint8_t *out, uint8_t &seq,
     out[19] = (uint8_t)(crc & 0xFF);
     out[20] = (uint8_t)((crc >> 8) & 0xFF);
     return 21;
+}
+
+// ----- MAVLink v2 SYS_STATUS (msgid 1) -------------------------------------
+// 31-byte payload, total 42-byte frame. Field order per MAVLink spec
+// (common.xml): onboard_control_sensors_{present,enabled,health} (u32 x 3),
+// load (u16), voltage_battery (u16 mV), current_battery (i16 cA), battery
+// remaining (i8 %), drop_rate_comm (u16), errors_comm (u16), errors_count_{1-4}
+// (u16 x 4). We fill plausible bench values.
+size_t build_mavlink_sys_status_v2(uint8_t *out, uint8_t &seq,
+                                   uint8_t sysid, uint8_t compid) {
+    out[0]  = 0xFD;
+    out[1]  = 31;               // payload length
+    out[2]  = 0;
+    out[3]  = 0;
+    out[4]  = seq++;
+    out[5]  = sysid;
+    out[6]  = compid;
+    out[7]  = 1; out[8]  = 0; out[9]  = 0;   // msgid 1 (SYS_STATUS)
+
+    uint8_t *p = &out[10];
+    auto putU32 = [&](uint32_t v) {
+        *p++ = v & 0xFF; *p++ = (v >> 8) & 0xFF;
+        *p++ = (v >> 16) & 0xFF; *p++ = (v >> 24) & 0xFF;
+    };
+    auto putU16 = [&](uint16_t v) { *p++ = v & 0xFF; *p++ = (v >> 8) & 0xFF; };
+    auto putI16 = [&](int16_t  v) { *p++ = v & 0xFF; *p++ = (v >> 8) & 0xFF; };
+
+    putU32(0x00000C0F);        // sensors_present: 3D gyro/accel/mag + GPS + baro
+    putU32(0x00000C0F);        // sensors_enabled: same
+    putU32(0x00000C0F);        // sensors_health:  all healthy
+    putU16(250);               // load: 25.0% (MAVLink uses 0.1%)
+    putU16(12600);             // voltage_battery: 12.6 V in mV
+    putI16(-1);                // current_battery: unknown
+    putU16(0);                 // drop_rate_comm
+    putU16(0);                 // errors_comm
+    putU16(0); putU16(0); putU16(0); putU16(0);  // errors_count[1..4]
+    *p++ = 75;                 // battery_remaining: 75 %
+
+    const uint16_t crc = mavlink_crc_x25(&out[1], 40, MAVLINK_SYS_STATUS_CRC_EXTRA);
+    out[40] = (uint8_t)(crc & 0xFF);
+    out[41] = (uint8_t)((crc >> 8) & 0xFF);
+    return 42;
 }
 
 // ----- ExpressLRS OTA packet ----------------------------------------------
@@ -192,9 +234,14 @@ size_t build_elrs_ota_packet(uint8_t *out, uint8_t payloadLen,
     // AUX / switches / TLM — zero out any remaining body bytes.
     while (pos + 2 < (size_t)payloadLen) out[pos++] = 0;
 
-    // CRC-14 over bytes [0..payloadLen-3], seeded from UID.
-    const uint16_t seed = elrs_crc14_seed_from_uid(uid);
-    const uint16_t crc  = elrs_crc14(out, payloadLen - 2, seed);
+    // CRC-14 over bytes [0..payloadLen-3]. Upstream ELRS mixes the nonce
+    // into the CRC init so each packet in the nonce cycle has a distinct
+    // CRC even with identical payload bytes — this is what the receiver
+    // uses to validate packet-timing integrity.
+    const uint16_t seed    = elrs_crc14_seed_from_uid(uid);
+    const uint8_t  nonce   = (uint8_t)(out[0] & 0x3F);
+    const uint16_t crcInit = (uint16_t)(seed ^ nonce);
+    const uint16_t crc     = elrs_crc14(out, payloadLen - 2, crcInit);
     // Write 14-bit CRC big-endian in the last two bytes. OR in the packet
     // type bits in the top 2 slots of the MSB so the receiver-side OTA4
     // header-check can recover them (we use type 0 so both bits stay 0).

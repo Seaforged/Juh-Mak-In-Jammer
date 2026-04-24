@@ -29,8 +29,9 @@ extern RemoteIdStatus g_ridStatus;
 // ----- BLE stack state -----------------------------------------------------
 static bool s_bleStackUp = false;
 static RemoteIdState s_state = {};
-static bool s_advStartPending = false;
-static bool s_advRunning = false;
+static volatile bool s_advConfigPending = false;
+static volatile bool s_advStartPending = false;
+static volatile bool s_advRunning = false;
 
 static esp_ble_adv_params_t ADV_PARAMS = {
     .adv_int_min       = 0x20,   // 20 ms
@@ -47,6 +48,7 @@ static void bleGapCb(esp_gap_ble_cb_event_t event,
                      esp_ble_gap_cb_param_t *param) {
     switch (event) {
         case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
+            s_advConfigPending = false;
             if (param->adv_data_raw_cmpl.status != ESP_BT_STATUS_SUCCESS) {
                 Serial.printf("[XR1-RID] BLE raw adv config failed: %d\n",
                               (int)param->adv_data_raw_cmpl.status);
@@ -54,14 +56,7 @@ static void bleGapCb(esp_gap_ble_cb_event_t event,
                 if (!s_advRunning) g_ridStatus.bleActive = false;
                 break;
             }
-            if (s_advStartPending && g_ridStatus.bleActive && !s_advRunning) {
-                if (esp_ble_gap_start_advertising(&ADV_PARAMS) != ESP_OK) {
-                    Serial.println("[XR1-RID] BLE adv start request failed");
-                    s_advStartPending = false;
-                    g_ridStatus.bleActive = false;
-                }
-            }
-            s_advStartPending = false;
+            if (!s_advRunning) s_advStartPending = true;
             break;
         case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
             if (param->adv_start_cmpl.status != ESP_BT_STATUS_SUCCESS) {
@@ -71,6 +66,7 @@ static void bleGapCb(esp_gap_ble_cb_event_t event,
                 g_ridStatus.bleActive = false;
             } else {
                 s_advRunning = true;
+                g_ridStatus.bleActive = true;
             }
             break;
         case ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT:
@@ -250,8 +246,7 @@ static void rebuildAdv() {
     const uint8_t typeIdx    = (typeNibble < 6) ? typeNibble : 0;
     s_advData[i++] = (uint8_t)(s_adCounters[typeIdx] & 0x0F);
     s_adCounters[typeIdx] = (uint8_t)((s_adCounters[typeIdx] + 1) & 0x0F);
-    // ODID payload truncated from 25 to 23 bytes (we drop the last two; most
-    // receivers accept this per ASTM F3411-22a §5.2.3.2 BLE4 fallback path).
+    // ASTM F3411 BLE4 Legacy: 23/25 bytes. Full 25B requires BLE 5 Extended ADV (not implemented).
     memcpy(&s_advData[i], odid, 23);
     i += 23;
     s_advDataLen = i;
@@ -260,7 +255,16 @@ static void rebuildAdv() {
 // 1 Hz refresh of the advertisement payload.
 static uint32_t s_lastAdRefreshMs = 0;
 extern "C" void ridBleTick() {
-    if (!g_ridStatus.bleActive) return;
+    if (s_advStartPending) {
+        s_advStartPending = false;
+        if (esp_ble_gap_start_advertising(&ADV_PARAMS) != ESP_OK) {
+            Serial.println("[XR1-RID] BLE adv start request failed");
+            s_advRunning = false;
+            g_ridStatus.bleActive = false;
+        }
+        return;
+    }
+    if (!g_ridStatus.bleActive || s_advConfigPending) return;
     const uint32_t now = millis();
     if (now - s_lastAdRefreshMs < 1000) return;
     s_lastAdRefreshMs = now;
@@ -268,13 +272,14 @@ extern "C" void ridBleTick() {
     rebuildAdv();
     if (s_advDataLen == 0) return;
     if (esp_ble_gap_config_adv_data_raw(s_advData, s_advDataLen) == ESP_OK) {
+        s_advConfigPending = true;
         ++g_ridStatus.bleFrameCount;
     }
 }
 
 // ----- public API ----------------------------------------------------------
 bool remoteIdBleStart(const RemoteIdState &state) {
-    if (g_ridStatus.bleActive) return true;
+    if (g_ridStatus.bleActive || s_advConfigPending || s_advStartPending) return true;
     s_state = state;
 
     if (!bringUpBleIfNeeded()) {
@@ -290,22 +295,25 @@ bool remoteIdBleStart(const RemoteIdState &state) {
         return false;
     }
     s_advRunning = false;
-    s_advStartPending = true;
+    s_advStartPending = false;
+    s_advConfigPending = true;
+    g_ridStatus.bleActive = false;
     if (esp_ble_gap_config_adv_data_raw(s_advData, s_advDataLen) != ESP_OK) {
+        s_advConfigPending = false;
         s_advStartPending = false;
         Serial.println("[XR1-RID] BLE raw adv config request failed");
         return false;
     }
 
-    g_ridStatus.bleActive = true;
     g_ridStatus.bleFrameCount = 0;
     s_lastAdRefreshMs = millis();
-    Serial.printf("[XR1-RID] BLE adv ON: %s\n", s_state.serial);
+    Serial.printf("[XR1-RID] BLE adv requested: %s\n", s_state.serial);
     return true;
 }
 
 void remoteIdBleStop() {
-    if (!g_ridStatus.bleActive) return;
+    if (!g_ridStatus.bleActive && !s_advConfigPending && !s_advStartPending && !s_advRunning) return;
+    s_advConfigPending = false;
     s_advStartPending = false;
     if (s_advRunning) {
         esp_ble_gap_stop_advertising();

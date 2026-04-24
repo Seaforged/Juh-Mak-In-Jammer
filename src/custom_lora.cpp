@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "custom_lora.h"
 #include "protocol_params.h"
+#include "system_health.h"
 
 // ============================================================
 // Custom LoRa Direct — v2 ref §3.6
@@ -170,6 +171,7 @@ void customLoraPrintConfig() {
 
 void customLoraStart() {
     if (!_radio) return;
+    if (!sx1262ModeAvailable()) return;
 
     buildHopTable();
     _hopIdx = 0;

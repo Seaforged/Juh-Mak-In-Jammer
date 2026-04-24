@@ -7,22 +7,39 @@
 // ============================================================================
 
 #include "xr1_driver.h"
+#include "board_config.h"
 
 #include <Arduino.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 
-// Wiring: ESP32-S3 is flexible, so UART1 is mapped to the two pins ND routed
-// to the XR1. See docs/XR1_Integration_Research.md §3.3.
-static constexpr uint8_t  PIN_S3_TX_TO_XR1_RX = 43;  // T3S3 TX -> XR1 GPIO 20
-static constexpr uint8_t  PIN_S3_RX_FROM_XR1_TX = 44;  // T3S3 RX <- XR1 GPIO 21
-static constexpr uint32_t XR1_BAUD            = 115200;
+// Wiring constants live in include/board_config.h so every module that
+// needs them (xr1_driver, xr1_passthrough, doc examples) references the
+// same macros instead of the raw GPIO numbers.
+static constexpr uint8_t  PIN_S3_TX_TO_XR1_RX   = XR1_UART_TX_PIN;
+static constexpr uint8_t  PIN_S3_RX_FROM_XR1_TX = XR1_UART_RX_PIN;
+static constexpr uint32_t XR1_BAUD              = 115200;
 
 static constexpr size_t   RESP_BUF_SZ         = 128;
 
 static uint32_t s_timeoutMs = 500;
 
 void xr1SetTimeoutMs(uint32_t ms) { s_timeoutMs = ms; }
+
+static bool appendFmt(char *buf, size_t bufSize, size_t &pos, const char *fmt, ...) {
+    if (!buf || pos >= bufSize) return false;
+    va_list ap;
+    va_start(ap, fmt);
+    const int n = vsnprintf(buf + pos, bufSize - pos, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= (bufSize - pos)) {
+        buf[bufSize - 1] = '\0';
+        return false;
+    }
+    pos += (size_t)n;
+    return true;
+}
 
 void xr1Init() {
     // Larger RX buffer so the XR1's ~350-byte boot banner doesn't overflow
@@ -37,7 +54,9 @@ void xr1Init() {
     // operator can see the XR1's boot log mirrored through the T3S3.
     Serial.println("[XR1-BOOT] listening for XR1 banner...");
     const uint32_t deadline = millis() + 3500;
-    String line;
+    char line[128];
+    size_t lineLen = 0;
+    line[0] = '\0';
     bool sawReady = false;
     size_t totalRx = 0;
     while (millis() < deadline && !sawReady) {
@@ -48,11 +67,14 @@ void xr1Init() {
             const char c = (char)ci;
             if (c == '\r') continue;
             if (c == '\n') {
-                if (line.length() > 0) Serial.printf("[XR1-BOOT] %s\n", line.c_str());
-                if (line.indexOf("XR1 READY") >= 0) { sawReady = true; break; }
-                line = "";
-            } else if (line.length() < 128) {
-                line += c;
+                line[lineLen] = '\0';
+                if (lineLen > 0) Serial.printf("[XR1-BOOT] %s\n", line);
+                if (strstr(line, "XR1 READY")) { sawReady = true; break; }
+                lineLen = 0;
+                line[0] = '\0';
+            } else if (lineLen + 1 < sizeof(line)) {
+                line[lineLen++] = c;
+                line[lineLen] = '\0';
             }
         }
         if (!sawReady) delay(5);
@@ -190,22 +212,44 @@ bool xr1Transmit(const uint8_t *data, uint8_t len) {
     // "TX " + 128 hex + '\0' = 132
     char cmd[140];
     size_t pos = 0;
-    pos += snprintf(cmd + pos, sizeof(cmd) - pos, "TX ");
+    if (!appendFmt(cmd, sizeof(cmd), pos, "TX ")) {
+        Serial.println("[XR1-ERR] TX command too long");
+        return false;
+    }
     for (uint8_t i = 0; i < len; ++i) {
-        pos += snprintf(cmd + pos, sizeof(cmd) - pos, "%02X", data[i]);
+        if (!appendFmt(cmd, sizeof(cmd), pos, "%02X", data[i])) {
+            Serial.println("[XR1-ERR] TX command too long");
+            return false;
+        }
     }
     return sendCmdExpectOk(cmd);
 }
 
-bool xr1SetPayload(const uint8_t *data, uint8_t len) {
+bool xr1SetPayload(const uint8_t *data, uint8_t len, uint16_t crcSeed) {
     if (len == 0 || len > 64) {
         Serial.println("[XR1-ERR] xr1SetPayload: invalid length");
         return false;
     }
-    char cmd[140];
-    size_t pos = snprintf(cmd, sizeof(cmd), "PAYLOAD ");
+    // "PAYLOAD " (8) + 128 hex + " XXXX" (5) + NUL = 142. cmd[160] leaves
+    // comfortable headroom for any future extension.
+    static_assert(160 >= (8 + 64 * 2 + 5 + 1), "PAYLOAD command buffer too small");
+    char cmd[160];
+    size_t pos = 0;
+    if (!appendFmt(cmd, sizeof(cmd), pos, "PAYLOAD ")) {
+        Serial.println("[XR1-ERR] PAYLOAD command too long");
+        return false;
+    }
     for (uint8_t i = 0; i < len; ++i) {
-        pos += snprintf(cmd + pos, sizeof(cmd) - pos, "%02X", data[i]);
+        if (!appendFmt(cmd, sizeof(cmd), pos, "%02X", data[i])) {
+            Serial.println("[XR1-ERR] PAYLOAD command too long");
+            return false;
+        }
+    }
+    if (crcSeed != 0) {
+        if (!appendFmt(cmd, sizeof(cmd), pos, " %04X", (unsigned)crcSeed)) {
+            Serial.println("[XR1-ERR] PAYLOAD command too long");
+            return false;
+        }
     }
     return sendCmdExpectOk(cmd);
 }
@@ -225,17 +269,29 @@ bool xr1StartHopEx(const float *channels, uint8_t count, uint16_t dwellMs,
     // to carry the full ELRS 2.4 GHz channel set in one command.
     char cmd[1024];
     size_t pos = 0;
-    pos += snprintf(cmd + pos, sizeof(cmd) - pos, "HOP ");
-    for (uint8_t i = 0; i < count; ++i) {
-        pos += snprintf(cmd + pos, sizeof(cmd) - pos, "%s%.3f",
-                        i == 0 ? "" : ",", channels[i]);
+    if (!appendFmt(cmd, sizeof(cmd), pos, "HOP ")) {
+        Serial.println("[XR1-ERR] HOP command too long");
+        return false;
     }
-    pos += snprintf(cmd + pos, sizeof(cmd) - pos, " %u", (unsigned)dwellMs);
+    for (uint8_t i = 0; i < count; ++i) {
+        if (!appendFmt(cmd, sizeof(cmd), pos, "%s%.3f",
+                       i == 0 ? "" : ",", channels[i])) {
+            Serial.println("[XR1-ERR] HOP command too long");
+            return false;
+        }
+    }
+    if (!appendFmt(cmd, sizeof(cmd), pos, " %u", (unsigned)dwellMs)) {
+        Serial.println("[XR1-ERR] HOP command too long");
+        return false;
+    }
     if (packetIntervalUs > 0 && packetsPerHop > 0 && payloadLen > 0) {
-        pos += snprintf(cmd + pos, sizeof(cmd) - pos, " %lu %u %u",
-                        (unsigned long)packetIntervalUs,
-                        (unsigned)packetsPerHop,
-                        (unsigned)payloadLen);
+        if (!appendFmt(cmd, sizeof(cmd), pos, " %lu %u %u",
+                       (unsigned long)packetIntervalUs,
+                       (unsigned)packetsPerHop,
+                       (unsigned)payloadLen)) {
+            Serial.println("[XR1-ERR] HOP command too long");
+            return false;
+        }
     }
     return sendCmdExpectOk(cmd);
 }

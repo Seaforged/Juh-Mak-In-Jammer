@@ -2,6 +2,7 @@
 #include "sik_radio.h"
 #include "rf_modes.h"       // for rfGetPower()
 #include "protocol_params.h"
+#include "system_health.h"
 
 // ============================================================
 // SiK Radio GFSK FHSS+TDM Simulation — v2 ref §3.3
@@ -43,8 +44,17 @@ static uint8_t _sikPayload[32];
 static uint8_t _sikMavSeq = 0;
 static size_t  _sikPayloadLen = 0;
 
-static void sikBuildMavlinkHeartbeat() {
-    _sikPayloadLen = build_mavlink_heartbeat_v2(_sikPayload, _sikMavSeq);
+// Alternate HEARTBEAT / SYS_STATUS on consecutive transmits so a
+// MAVLink-aware receiver sees the mixed traffic real SiK links carry
+// rather than a monotonous stream of one message type. Choose based on
+// the current seq parity BEFORE increment (build_mavlink_*_v2 increments
+// internally).
+static void sikBuildMavlinkNext() {
+    if ((_sikMavSeq & 1) == 0) {
+        _sikPayloadLen = build_mavlink_heartbeat_v2(_sikPayload, _sikMavSeq);
+    } else {
+        _sikPayloadLen = build_mavlink_sys_status_v2(_sikPayload, _sikMavSeq);
+    }
 }
 
 // Build channel frequency table using SiK formula — v2 §3.3.2
@@ -86,6 +96,7 @@ void sikSetSpeed(uint8_t speedIndex) {
 
 void sikStart() {
     if (!_radio) return;
+    if (!sx1262ModeAvailable()) return;
 
     float airSpeed = SIK_AIR_SPEEDS_KBPS[_speedIdx];
 
@@ -98,7 +109,7 @@ void sikStart() {
 
     // Build initial MAVLink HEARTBEAT — rebuilt fresh on every TX so the
     // seq counter increments and CRC stays valid.
-    sikBuildMavlinkHeartbeat();
+    sikBuildMavlinkNext();
 
     int8_t pwr = rfGetPower();
 
@@ -133,7 +144,7 @@ void sikStart() {
     _lastHopUs = micros();
 
     // Transmit first packet
-    sikBuildMavlinkHeartbeat();
+    sikBuildMavlinkNext();
     _radio->transmit(_sikPayload, _sikPayloadLen);
     _packetCount++;
 
@@ -169,7 +180,7 @@ void sikUpdate() {
     _currentMHz = nextFreq;
 
     _radio->setFrequency(nextFreq);
-    sikBuildMavlinkHeartbeat();
+    sikBuildMavlinkNext();
     _radio->transmit(_sikPayload, _sikPayloadLen);
     _packetCount++;
 }

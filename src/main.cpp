@@ -23,6 +23,8 @@
 #include "xr1_modes.h"
 #include "xr1_rid_modes.h"
 #include "combined_scenarios.h"
+#include "system_health.h"
+#include <math.h>
 
 // --- OLED Display ---
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
@@ -31,8 +33,13 @@ Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
 SPIClass loraSPI(HSPI);
 SX1262 radio = new Module(LORA_CS, LORA_DIO1, LORA_RST, LORA_BUSY, loraSPI);
 
+bool g_sx1262Failed = false;
+bool g_oledFailed = false;
+volatile bool g_sx1262Locked = false;
+
 // --- Boot Splash Screen (shown for 2 seconds) ---
 static void showBootScreen() {
+    if (g_oledFailed) return;
     display.clearDisplay();
 
     // Drone + RF wave arcs bitmap in the top 40 pixels
@@ -56,22 +63,23 @@ static void printHelp() {
     Serial.printf("=== %s v%s -- Drone Signal Emulator ===\n\n", JAMMER_NAME, JAMMER_VERSION);
 
     Serial.println("DRONE PROTOCOLS:");
-    Serial.println("  e  ELRS RF profile e1-e6=rate  f/a/u/i=domain  b=binding");
-    Serial.println("  g  Crossfire footprint g/g9=915 g8=868 gl=LoRa50Hz");
-    Serial.println("  k  SiK footprint  k1=64k  k2=125k  k3=250k");
-    Serial.println("  l  mLRS footprint l1=19Hz  l2=31Hz  l3=50Hz(FSK)");
+    Serial.println("  e  ELRS FHSS      e1-e6=rate [PACKET-AUTH + CRC-14]");
+    Serial.println("  g  Crossfire      g/g9=915 [CRSF-FRAME, rate PARTIAL]");
+    Serial.println("  k  SiK Radio      k1=64k [MAVLink HEARTBEAT+STATUS]");
+    Serial.println("  l  mLRS           l1=19Hz [FOOTPRINT, ch grounded]");
     Serial.println("  u  Custom LoRa    u?=settings  uf/us/ub/ur/uh/up/uw=config");
-    Serial.println("  x1-x4 ELRS 2.4G RF 500/250/150/50Hz via XR1");
-    Serial.println("  x5 Ghost 2.4G     approximate (proprietary)");
-    Serial.println("  x6 FrSky D16 2.4G GFSK 250k/50k footprint");
-    Serial.println("  x7 FlySky 2A 2.4G GFSK 250k/50k [APPROX]");
-    Serial.println("  x8 DJI Energy 2.4G GFSK bursts [APPROX, not OcuSync]");
+    Serial.println("  x1-x4 ELRS 2.4G  [PACKET-AUTH + CRC-14 per-nonce]");
+    Serial.println("  x5 Ghost 2.4G    [FOOTPRINT, proprietary]");
+    Serial.println("  x6 FrSky D16     [FOOTPRINT, GFSK only]");
+    Serial.println("  x7 FlySky 2A     [FOOTPRINT, GFSK only]");
+    Serial.println("  x8 DJI Energy    [FOOTPRINT, not OFDM]");
     Serial.println("  x9 Generic 2.4G   args: L|F <params...>");
     Serial.println("  xq Stop XR1       (leaves sub-GHz running)");
-    Serial.println("  y  XR1 RID (all)  WiFi+BLE+DJI defaults");
-    Serial.println("  y1 XR1 WiFi ODID  y2 BLE ODID  y3 DJI DroneID");
+    Serial.println("  y  XR1 RID       WiFi [ODID-PACK] BLE [BLE4-23B] DJI [PARTIAL]");
+    Serial.println("  y1 XR1 WiFi ODID  y2 BLE ODID [BLE4-23B truncated, PARTIAL per ASTM]  y3 DJI DroneID");
     Serial.println("  y4 XR1 WiFi NaN   (stub on ESP32C3)");
     Serial.println("  ya All 4 RID      yq Stop XR1 RID");
+    Serial.println("  c1-c5 Combined   [multi-emitter, per-protocol fidelity applies]");
     Serial.println("  c1 Racing Drone   ELRS915 + ELRS2.4 + ODID WiFi/BLE");
     Serial.println("  c2 DJI Consumer   DJI energy + DJI DroneID + ODID BLE");
     Serial.println("  c3 Long Range FPV Crossfire 915 + ODID WiFi/BLE");
@@ -97,6 +105,55 @@ static void printHelp() {
     Serial.println();
 }
 
+static bool x9RangeError(const char *param, float value) {
+    Serial.printf("[XR1-MODE] x9 parameter out of range: %s=%.3f\n", param, value);
+    return false;
+}
+
+static bool x9BwAllowed(float bwKhz, float startMhz) {
+    const float *allowed = nullptr;
+    size_t allowedCount = 0;
+    static const float subGhzBw[] = { 125.0f, 250.0f, 500.0f };
+    static const float highBw[] = { 203.125f, 406.25f, 812.5f };
+    if (startMhz < 1000.0f) {
+        allowed = subGhzBw;
+        allowedCount = sizeof(subGhzBw) / sizeof(subGhzBw[0]);
+    } else {
+        allowed = highBw;
+        allowedCount = sizeof(highBw) / sizeof(highBw[0]);
+    }
+    for (size_t i = 0; i < allowedCount; ++i) {
+        if (fabsf(bwKhz - allowed[i]) < 0.01f) return true;
+    }
+    return false;
+}
+
+static bool validateX9Common(unsigned chInt, float startMhz, uint32_t dwInt, int pwrInt) {
+    if (chInt < 1 || chInt > 80)     return x9RangeError("count", (float)chInt);
+    if (dwInt < 1 || dwInt > 65535)  return x9RangeError("dwell", (float)dwInt);
+    if (pwrInt < -10 || pwrInt > 22) return x9RangeError("power", (float)pwrInt);
+    if (startMhz < 150.0f || startMhz > 2500.0f) return x9RangeError("startMHz", startMhz);
+    return true;
+}
+
+static bool validateX9Lora(unsigned sfInt, float bwF, unsigned crInt,
+                           unsigned chInt, float startMhz, uint32_t dwInt,
+                           int pwrInt) {
+    if (!validateX9Common(chInt, startMhz, dwInt, pwrInt)) return false;
+    if (sfInt < 5 || sfInt > 12) return x9RangeError("sf", (float)sfInt);
+    if (crInt < 5 || crInt > 8)  return x9RangeError("cr", (float)crInt);
+    if (!x9BwAllowed(bwF, startMhz)) return x9RangeError("bw", bwF);
+    return true;
+}
+
+static bool validateX9Fsk(unsigned brKbps, float devKhz, unsigned chInt,
+                          float startMhz, uint32_t dwInt, int pwrInt) {
+    if (!validateX9Common(chInt, startMhz, dwInt, pwrInt)) return false;
+    if (brKbps < 1 || brKbps > 600) return x9RangeError("bitrate", (float)brKbps);
+    if (devKhz < 1.0f || devKhz > 200.0f) return x9RangeError("deviation", devKhz);
+    return true;
+}
+
 void setup() {
     Serial.begin(115200);
     delay(1000);
@@ -118,7 +175,8 @@ void setup() {
     // --- OLED Init ---
     Wire.begin(OLED_SDA, OLED_SCL);
     if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
-        Serial.println("ERROR: OLED init failed!");
+        g_oledFailed = true;
+        Serial.println("[BOOT] OLED init FAILED -- serial/headless mode only");
     } else {
         Serial.println("OLED: OK");
         showBootScreen();
@@ -134,7 +192,9 @@ void setup() {
     if (state == RADIOLIB_ERR_NONE) {
         Serial.println("OK");
     } else {
+        g_sx1262Failed = true;
         Serial.printf("FAILED (error %d)\n", state);
+        Serial.println("[BOOT] SX1262 init FAILED -- sub-GHz modes disabled");
     }
 
     // --- Initialize subsystems ---
@@ -294,9 +354,11 @@ static void handleSerialCommands() {
             // Legacy: CW Tone
             stopCurrentMode();
             cwStart();
-            menuSetState(STATE_CW_ACTIVE);
             CwParams p = cwGetParams();
-            Serial.printf("[MODE] CW Tone: %.2f MHz, %d dBm\n", p.freqMHz, p.powerDbm);
+            if (p.transmitting) {
+                menuSetState(STATE_CW_ACTIVE);
+                Serial.printf("[MODE] CW Tone: %.2f MHz, %d dBm\n", p.freqMHz, p.powerDbm);
+            }
             break;
         }
 
@@ -386,7 +448,7 @@ static void handleSerialCommands() {
         stopCurrentMode();
         sikSetSpeed(speedIdx);
         sikStart();
-        menuSetState(STATE_SIK_ACTIVE);
+        if (sikGetParams().running) menuSetState(STATE_SIK_ACTIVE);
         break;
     }
 
@@ -403,7 +465,7 @@ static void handleSerialCommands() {
         stopCurrentMode();
         mlrsSetMode(modeIdx);
         mlrsStart();
-        menuSetState(STATE_MLRS_ACTIVE);
+        if (mlrsGetParams().running) menuSetState(STATE_MLRS_ACTIVE);
         break;
     }
 
@@ -441,14 +503,16 @@ static void handleSerialCommands() {
     case 'i':   // LoRaWAN US915 standalone false positive
         stopCurrentMode();
         fpStart(FP_LORAWAN);
-        menuSetState(STATE_FP_ACTIVE);
-        Serial.printf("[MODE] LoRaWAN US915 FP: SB2 channels, %d dBm\n", rfGetPower());
+        if (fpGetParams().running) {
+            menuSetState(STATE_FP_ACTIVE);
+            Serial.printf("[MODE] LoRaWAN US915 FP: SB2 channels, %d dBm\n", rfGetPower());
+        }
         break;
 
     case 't':   // Power Ramp (drone approach simulation)
         stopCurrentMode();
         powerRampStart();
-        menuSetState(STATE_RAMP_ACTIVE);
+        if (powerRampGetParams().running) menuSetState(STATE_RAMP_ACTIVE);
         break;
 
     case 'f': { // Infrastructure false positive modes — f1/f2/f3
@@ -464,7 +528,9 @@ static void handleSerialCommands() {
                 Serial.println("f1=Meshtastic f2=Helium f3=LoRaWAN-EU868");
                 break;
             }
-            if (c >= '1' && c <= '3') menuSetState(STATE_INFRA_ACTIVE);
+            if (c >= '1' && c <= '3' && infraGetParams().running) {
+                menuSetState(STATE_INFRA_ACTIVE);
+            }
         } else {
             Serial.println("f1=Meshtastic f2=Helium f3=LoRaWAN-EU868");
         }
@@ -477,7 +543,7 @@ static void handleSerialCommands() {
             // Bare 'u' — start transmission
             stopCurrentMode();
             customLoraStart();
-            menuSetState(STATE_CUSTOM_LORA_ACTIVE);
+            if (customLoraGetParams().running) menuSetState(STATE_CUSTOM_LORA_ACTIVE);
         } else {
             // Read subcommand + value into buffer
             char buf[16];
@@ -505,10 +571,12 @@ static void handleSerialCommands() {
     case 'b':   // Band Sweep
         stopCurrentMode();
         sweepStart();
-        menuSetState(STATE_SWEEP_ACTIVE);
         { SweepParams sw = sweepGetParams();
-          Serial.printf("[MODE] Band Sweep: %.1f-%.1f MHz, step %.0f kHz, %d dBm\n",
-                        sw.startMHz, sw.endMHz, sw.stepMHz * 1000.0f, sw.powerDbm); }
+          if (sw.running) {
+              menuSetState(STATE_SWEEP_ACTIVE);
+              Serial.printf("[MODE] Band Sweep: %.1f-%.1f MHz, step %.0f kHz, %d dBm\n",
+                            sw.startMHz, sw.endMHz, sw.stepMHz * 1000.0f, sw.powerDbm);
+          } }
         break;
 
     case 'r':   // Remote ID Spoofer
@@ -521,8 +589,10 @@ static void handleSerialCommands() {
     case 'm':   // Mixed False Positive (LoRaWAN + ELRS)
         stopCurrentMode();
         fpStart(FP_MIXED);
-        menuSetState(STATE_FP_ACTIVE);
-        Serial.printf("[MODE] Mixed FP (LoRaWAN+ELRS): %d dBm\n", rfGetPower());
+        if (fpGetParams().running) {
+            menuSetState(STATE_FP_ACTIVE);
+            Serial.printf("[MODE] Mixed FP (LoRaWAN+ELRS): %d dBm\n", rfGetPower());
+        }
         break;
 
     case 'x': {
@@ -535,9 +605,10 @@ static void handleSerialCommands() {
         delay(80);
         if (!Serial.available()) {
             stopCurrentMode();
-            combinedStart();
-            menuSetState(STATE_COMBINED_ACTIVE);
-            Serial.println("[MODE] Combined: RID(Core0) + ELRS(Core1)");
+            if (combinedStart()) {
+                menuSetState(STATE_COMBINED_ACTIVE);
+                Serial.println("[MODE] Combined: RID(Core0) + ELRS(Core1)");
+            }
             break;
         }
         char sub = Serial.read();
@@ -586,6 +657,7 @@ static void handleSerialCommands() {
                                 &modLetter, &sfInt, &bwF, &crInt, &chInt,
                                 &startMhz, &spacing, &dwInt, &pwrInt);
             if (parsed >= 9 && (modLetter == 'L' || modLetter == 'l')) {
+                if (!validateX9Lora(sfInt, bwF, crInt, chInt, startMhz, dwInt, pwrInt)) break;
                 cfg.isLora = true;
                 cfg.sf = (uint8_t)sfInt; cfg.bwKhz = bwF; cfg.cr = (uint8_t)crInt;
                 cfg.channelCount = (uint8_t)chInt; cfg.startMhz = startMhz;
@@ -595,6 +667,7 @@ static void handleSerialCommands() {
                 if (xr1ModeGenericStart(cfg)) menuSetState(STATE_XR1_ACTIVE);
             } else if (parsed >= 9 && (modLetter == 'F' || modLetter == 'f')) {
                 // GFSK form: %c %brkbps %devkhz (cr) %count %start %spacing %dwell %pwr
+                if (!validateX9Fsk(sfInt, bwF, chInt, startMhz, dwInt, pwrInt)) break;
                 cfg.isLora = false;
                 cfg.brKbps = (float)sfInt;  // first numeric after F is bitrate kbps
                 cfg.devKhz = bwF;           // second is deviation kHz

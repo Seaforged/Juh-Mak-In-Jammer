@@ -2,6 +2,7 @@
 #include "mlrs_sim.h"
 #include "rf_modes.h"       // for rfGetPower()
 #include "protocol_params.h"
+#include "system_health.h"
 
 // ============================================================
 // mLRS Simulation — v2 ref §3.4 [Ref P12, P14]
@@ -10,30 +11,45 @@
 // either a TX or RX burst, and both radios hop in lockstep.
 // Effective hop rate = packet_rate / 2 (since TX and RX alternate).
 //
-// NOTE: Many parameters are [VERIFY] — marked with TODO comments.
-// These will be corrected when the mLRS repo is cloned and read.
+// Ground-truth parameters from olliw42/mLRS (Common/fhss.h and
+// Common/common_conf.h, per the JJ fix3 research pass):
+//   - 915 MHz FCC:    43 channels, 902.0 - 928.0 MHz
+//   - 868 MHz EU:     10 channels, 863.275 - 869.575 MHz (not emulated here)
+//   - 433 MHz:         3 channels (not emulated here)
+// Air-rate sensitivity figures in the mLRS docs point to SF7/BW500 for the
+// 19 Hz mode (-112 dBm) and SF6/BW500 for the 31 Hz mode (-108 dBm). The
+// 50 Hz FSK mode's bitrate / deviation are not documented publicly —
+// approximated against SiK-style 64 kbps / 25 kHz as the best defensible
+// placeholder. Frame length is FRAME_TX_RX_LEN = 91 in mLRS sources.
+//
+// Hop sequence in real mLRS is LFSR-based with a bind-phrase-derived
+// sync word. We keep the simpler LCG shuffle here — the spectral
+// footprint (channel occupancy) is identical; only the hop order differs.
 
 static SX1262 *_radio = nullptr;
 static uint8_t _modeIdx = 0;  // default: 19 Hz LoRa
 
-// TODO [VERIFY]: mLRS 915 band channel count — estimated 20 — v2 §3.4
-static const uint8_t  MLRS_NUM_CHANNELS  = 20;
-static const float    MLRS_BAND_START    = 902.0f;   // TODO [VERIFY] exact start freq
-static const float    MLRS_BAND_END      = 928.0f;   // TODO [VERIFY] exact end freq
+static const uint8_t  MLRS_NUM_CHANNELS  = 43;        // mLRS 915 FCC (fhss.h)
+static const float    MLRS_BAND_START    = 902.0f;    // FCC ISM start
+static const float    MLRS_BAND_END      = 928.0f;    // FCC ISM end
+static const uint8_t  MLRS_FRAME_LEN     = 91;        // FRAME_TX_RX_LEN
 
-// Per-mode radio parameters — estimated, all marked [VERIFY]
 struct MlrsModeParams {
-    uint8_t  sf;           // TODO [VERIFY] per mode
-    uint32_t bwHz;         // TODO [VERIFY] per mode
-    float    fskBitrate;   // 0 = LoRa mode, >0 = FSK mode
-    uint8_t  payloadLen;
+    uint8_t  sf;           // per mode (from sensitivity tables)
+    uint32_t bwHz;         // per mode
+    float    fskBitrate;   // 0 = LoRa mode, >0 = FSK mode (kbps)
+    uint8_t  payloadLen;   // mLRS uses fixed 91-byte frames
 };
 
-// TODO [VERIFY]: SF and BW for each mode — estimated to fit frame timing
+// Grounded values:
+//   19 Hz: SF7/BW500 (sensitivity -112 dBm suggests SF7)
+//   31 Hz: SF6/BW500 (sensitivity -108 dBm suggests SF6)
+//   50 Hz FSK: bitrate / deviation undocumented publicly; SiK-like
+//              64 kbps / 16 kHz is the closest defensible approximation.
 static const MlrsModeParams MLRS_MODE_PARAMS[] = {
-    { 8, 500000,  0.0f, 10 },  // 19 Hz LoRa — ~11ms ToA fits in 52ms frame
-    { 7, 500000,  0.0f, 10 },  // 31 Hz LoRa — ~6.7ms ToA fits in 32ms frame
-    { 0, 0,      64.0f, 32 },  // 50 Hz FSK  — GFSK 64 kbps, similar to SiK
+    { 7, 500000,  0.0f, MLRS_FRAME_LEN },  // 19 Hz LoRa SF7/BW500
+    { 6, 500000,  0.0f, MLRS_FRAME_LEN },  // 31 Hz LoRa SF6/BW500
+    { 0, 0,      64.0f, MLRS_FRAME_LEN },  // 50 Hz GFSK ~64 kbps (approximation)
 };
 
 // Channel table
@@ -50,11 +66,26 @@ static bool     _isTxPhase   = true;   // alternates TX/RX
 static unsigned long _lastFrameUs = 0;
 
 // Dummy payloads
-static const uint8_t MLRS_LORA_PAYLOAD[] = { 0x4D, 0x4C, 0x52, 0x53, 0x00, 0x00, 0x00, 0x00, 0x55, 0xAA };
-static uint8_t _mlrsFskPayload[32];
+// mLRS transmits a fixed 91-byte frame (FRAME_TX_RX_LEN). We fill it with
+// a recognisable "MLRS" prefix then zero padding — plausible at the byte
+// level for a receiver doing length-based filtering.
+static uint8_t _mlrsLoraPayload[MLRS_FRAME_LEN];
+static uint8_t _mlrsFskPayload[MLRS_FRAME_LEN];
+static bool    _mlrsPayloadsInit = false;
+
+static void mlrsEnsurePayloads() {
+    if (_mlrsPayloadsInit) return;
+    memset(_mlrsLoraPayload, 0, sizeof(_mlrsLoraPayload));
+    _mlrsLoraPayload[0] = 'M'; _mlrsLoraPayload[1] = 'L';
+    _mlrsLoraPayload[2] = 'R'; _mlrsLoraPayload[3] = 'S';
+    _mlrsPayloadsInit = true;
+}
 
 static void mlrsBuildChannelTable() {
-    // Simple linear spacing across the band — TODO [VERIFY] actual mLRS channel plan
+    // Linear spacing across the FCC band. Real mLRS channel centres come
+    // from fhss.h's per-band tables; the spectral envelope is the same
+    // whether the centres line up on a uniform grid or the mLRS grid
+    // (both span 902-928 MHz with ~43 channels).
     for (uint8_t i = 0; i < MLRS_NUM_CHANNELS; i++) {
         if (MLRS_NUM_CHANNELS > 1) {
             _mlrsChannels[i] = MLRS_BAND_START +
@@ -94,6 +125,7 @@ void mlrsSetMode(uint8_t modeIndex) {
 
 void mlrsStart() {
     if (!_radio) return;
+    if (!sx1262ModeAvailable()) return;
 
     const MlrsMode& mode = MLRS_MODES[_modeIdx];
     const MlrsModeParams& params = MLRS_MODE_PARAMS[_modeIdx];
@@ -104,6 +136,7 @@ void mlrsStart() {
     _packetCount = 0;
     _hopCount = 0;
     _isTxPhase = true;
+    mlrsEnsurePayloads();
 
     int8_t pwr = rfGetPower();
 
@@ -117,10 +150,13 @@ void mlrsStart() {
             _mlrsChannels[_hopSeq[0]],
             (float)(params.bwHz / 1000),
             params.sf,
-            7,                      // CR 4/7 (estimated, TODO [VERIFY])
-            SYNC_WORD_ELRS,         // TODO [VERIFY] mLRS sync word — using 0x12 as placeholder
+            7,                      // CR 4/7 (mLRS default, not bind-phrase-derived)
+            SYNC_WORD_ELRS,         // 0x12 private LoRa — real mLRS derives
+                                    // from bind phrase; the public sync byte
+                                    // at least flags it as a private network.
             pwr,
-            6,                      // preamble (TODO [VERIFY])
+            8,                      // preamble (LoRa default; mLRS uses 8 per
+                                    // the reference implementation)
             1.8, false
         );
         if (state == RADIOLIB_ERR_NONE) _radio->explicitHeader();
@@ -152,7 +188,7 @@ void mlrsStart() {
     // Transmit first packet
     int16_t txRc;
     if (mode.isLoRa) {
-        txRc = _radio->startTransmit(MLRS_LORA_PAYLOAD, params.payloadLen);
+        txRc = _radio->startTransmit(_mlrsLoraPayload, params.payloadLen);
     } else {
         txRc = _radio->transmit(_mlrsFskPayload, params.payloadLen);
     }
@@ -200,7 +236,7 @@ void mlrsUpdate() {
         // TX phase: transmit on current channel
         int16_t txRc;
         if (mode.isLoRa) {
-            txRc = _radio->startTransmit(MLRS_LORA_PAYLOAD, params.payloadLen);
+            txRc = _radio->startTransmit(_mlrsLoraPayload, params.payloadLen);
         } else {
             txRc = _radio->transmit(_mlrsFskPayload, params.payloadLen);
         }

@@ -3,6 +3,7 @@
 #include "rid_spoofer.h"
 #include "rf_modes.h"
 #include "protocol_params.h"
+#include "system_health.h"
 
 // ============================================================
 // Combined Mode — RID (Core 0) + ELRS (Core 1 FreeRTOS task)
@@ -23,8 +24,10 @@ static TaskHandle_t _elrsTaskHandle = nullptr;
 // ELRS task state (runs on Core 1)
 static volatile bool _elrsTaskRunning = false;
 static volatile bool _elrsTaskExited  = false;
+static volatile bool _elrsTaskStuck   = false;
 static volatile uint32_t _elrsTaskPkts = 0;
 static volatile uint32_t _elrsTaskHops = 0;
+static volatile uint32_t _elrsTaskStackHwmBytes = 0;
 
 // ELRS parameters from protocol_params.h — no local duplicates
 static const ElrsDomain&  _cmbDom  = ELRS_DOMAINS[ELRS_DOMAIN_FCC915];
@@ -110,7 +113,9 @@ static void elrsTask(void *param) {
 
     radio->standby();
     radio->begin(915.0, 125.0, 9, 7, SYNC_WORD_ELRS, 10, 8, 1.8, false);
+    _elrsTaskStackHwmBytes = (uint32_t)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t));
     _elrsTaskExited = true;
+    _elrsTaskRunning = false;
     vTaskDelete(NULL);
 }
 
@@ -123,8 +128,18 @@ void combinedInit(SX1262 *radio) {
     _combinedRunning = false;
 }
 
-void combinedStart() {
-    if (!_radio) return;
+bool combinedStart() {
+    if (!_radio) return false;
+    if (!sx1262ModeAvailable()) return false;
+    if (_elrsTaskStuck) {
+        g_sx1262Locked = true;
+        Serial.println("[MODE] SX1262 locked by stuck ELRS task -- power cycle required");
+        return false;
+    }
+    if (_elrsTaskHandle && !_elrsTaskExited) {
+        Serial.println("[MODE] SX1262 locked by active ELRS task -- stop combined mode first");
+        return false;
+    }
 
     // Initialize RID if not already done
     ridStart();
@@ -133,11 +148,12 @@ void combinedStart() {
     cmbBuildHopSequence();
     _elrsTaskPkts = 0;
     _elrsTaskHops = 0;
+    _elrsTaskStackHwmBytes = 0;
 
     // Launch ELRS on Core 1 as a pinned FreeRTOS task
     _elrsTaskRunning = true;
     _elrsTaskExited  = false;
-    xTaskCreatePinnedToCore(
+    BaseType_t rc = xTaskCreatePinnedToCore(
         elrsTask,           // task function
         "elrs_tx",          // name
         4096,               // stack size
@@ -146,10 +162,20 @@ void combinedStart() {
         &_elrsTaskHandle,   // handle
         1                   // Core 1
     );
+    if (rc != pdPASS) {
+        _elrsTaskRunning = false;
+        _elrsTaskExited = true;
+        _elrsTaskHandle = nullptr;
+        ridStop();
+        _combinedRunning = false;
+        Serial.println("COMBINED: failed to create ELRS task");
+        return false;
+    }
 
     _startTimeMs = millis();
     _combinedRunning = true;
     Serial.println("COMBINED: Started -- RID on Core 0, ELRS on Core 1");
+    return true;
 }
 
 void combinedStop() {
@@ -159,18 +185,21 @@ void combinedStop() {
     // is mid-transmit (~4 ms worst case) this is ample time.
     _elrsTaskRunning = false;
     if (_elrsTaskHandle) {
-        uint32_t deadline = millis() + 200;
+        uint32_t deadline = millis() + 500;
         while (!_elrsTaskExited && millis() < deadline) {
             vTaskDelay(pdMS_TO_TICKS(5));
         }
         if (!_elrsTaskExited) {
-            Serial.println("COMBINED: ELRS task exit timeout -- forcing delete");
-            vTaskDelete(_elrsTaskHandle);
-            _elrsTaskExited = true;
+            _elrsTaskStuck = true;
+            g_sx1262Locked = true;
+            Serial.println("COMBINED: ELRS task stuck -- SX1262 state may be inconsistent, power cycle recommended");
+        } else {
+            Serial.printf("COMBINED: ELRS task stack HWM: %u bytes free\n",
+                          (unsigned)_elrsTaskStackHwmBytes);
+            _elrsTaskHandle = nullptr;
         }
-        _elrsTaskHandle = nullptr;
     }
-    if (_radio) _radio->standby();
+    if (_radio && !_elrsTaskStuck) _radio->standby();
 
     // Stop RID
     ridStop();

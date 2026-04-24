@@ -15,6 +15,7 @@
 #include "xr1_modes.h"
 #include "xr1_rid_modes.h"
 #include "combined_scenarios.h"
+#include "system_health.h"
 
 // ============================================================
 // Menu state machine + button debouncer
@@ -352,6 +353,12 @@ static void drawCombinedActive() {
 // ============================================================
 
 void menuInit(Adafruit_SSD1306 *oled) {
+    if (g_oledFailed) {
+        _oled = nullptr;
+        _state = STATE_MAIN_MENU;
+        _needsRedraw = false;
+        return;
+    }
     _oled = oled;
     _state = STATE_MAIN_MENU;
     _mainSel = MAIN_RF_SIGGEN;  // default to first working mode
@@ -374,6 +381,7 @@ void menuRequestRedraw() {
 
 void menuUpdate() {
     ButtonPress btn = buttonRead();
+    if (g_oledFailed || !_oled) return;
 
     switch (_state) {
 
@@ -396,9 +404,10 @@ void menuUpdate() {
                 _state = STATE_RID_ACTIVE;
                 _needsRedraw = true;
             } else if (_mainSel == MAIN_COMBINED) {
-                combinedStart();
-                _state = STATE_COMBINED_ACTIVE;
-                _needsRedraw = true;
+                if (combinedStart()) {
+                    _state = STATE_COMBINED_ACTIVE;
+                    _needsRedraw = true;
+                }
             } else if (_mainSel == MAIN_SWARM) {
                 swarmStart();
                 _state = STATE_SWARM_ACTIVE;
@@ -416,24 +425,33 @@ void menuUpdate() {
         } else if (btn == BTN_LONG) {
             if (_siggenSel == SIGGEN_CW_TONE) {
                 cwStart();
-                _state = STATE_CW_ACTIVE;
-                _needsRedraw = true;
+                if (cwGetParams().transmitting) {
+                    _state = STATE_CW_ACTIVE;
+                    _needsRedraw = true;
+                }
             } else if (_siggenSel == SIGGEN_SWEEP) {
                 sweepStart();
-                _state = STATE_SWEEP_ACTIVE;
-                _needsRedraw = true;
+                if (sweepGetParams().running) {
+                    _state = STATE_SWEEP_ACTIVE;
+                    _needsRedraw = true;
+                }
             } else if (_siggenSel == SIGGEN_ELRS) {
-                elrsStart();
-                _state = STATE_ELRS_ACTIVE;
-                _needsRedraw = true;
+                if (elrsStart()) {
+                    _state = STATE_ELRS_ACTIVE;
+                    _needsRedraw = true;
+                }
             } else if (_siggenSel == SIGGEN_CROSSFIRE) {
                 crossfireStart();
-                _state = STATE_CROSSFIRE_ACTIVE;
-                _needsRedraw = true;
+                if (crossfireGetParams().running) {
+                    _state = STATE_CROSSFIRE_ACTIVE;
+                    _needsRedraw = true;
+                }
             } else if (_siggenSel == SIGGEN_POWER_RAMP) {
                 powerRampStart();
-                _state = STATE_RAMP_ACTIVE;
-                _needsRedraw = true;
+                if (powerRampGetParams().running) {
+                    _state = STATE_RAMP_ACTIVE;
+                    _needsRedraw = true;
+                }
             } else if (_siggenSel == SIGGEN_BACK) {
                 _state = STATE_MAIN_MENU;
                 _needsRedraw = true;
@@ -518,8 +536,10 @@ void menuUpdate() {
                 _needsRedraw = true;
             } else {
                 fpStart((FpMode)_fpSel);
-                _state = STATE_FP_ACTIVE;
-                _needsRedraw = true;
+                if (fpGetParams().running) {
+                    _state = STATE_FP_ACTIVE;
+                    _needsRedraw = true;
+                }
             }
         }
         if (_needsRedraw) { drawFpMenu(); _needsRedraw = false; }
