@@ -14,6 +14,7 @@
 #include "infra_sim.h"
 #include "xr1_modes.h"
 #include "xr1_rid_modes.h"
+#include "combined_scenarios.h"
 
 // ============================================================
 // Menu state machine + button debouncer
@@ -934,6 +935,49 @@ void menuUpdate() {
                 _oled->display();
 
                 lastRidRefresh = millis();
+                _needsRedraw = false;
+            }
+        }
+        break;
+
+    // --- Combined multi-emitter scenario (Phase 6) ---
+    case STATE_COMBINED_SCENARIO_ACTIVE:
+        combinedScenarioUpdate();   // pump ELRS / Crossfire FHSS hops
+        if (btn == BTN_LONG) {
+            combinedScenarioStop();
+            _state = STATE_MAIN_MENU;
+            _needsRedraw = true;
+        }
+        {
+            static unsigned long lastCombRefresh = 0;
+            if (_needsRedraw || (millis() - lastCombRefresh > 500)) {
+                _oled->clearDisplay();
+                _oled->setTextSize(1);
+                _oled->setTextColor(SSD1306_WHITE);
+                _oled->setCursor(0, 0);
+                _oled->print("COMBINED");
+                _oled->drawFastHLine(0, 10, OLED_WIDTH, SSD1306_WHITE);
+
+                CombinedScenarioStatus cs = combinedScenarioGetStatus();
+                _oled->setCursor(0, 12);
+                _oled->printf("%s", cs.name);
+
+                _oled->setCursor(0, 24);
+                _oled->printf("SX1262: %s %s", cs.subGhzLabel,
+                              cs.subGhzActive ? "ON" : "-");
+                _oled->setCursor(0, 34);
+                _oled->printf("LR1121: %s %s", cs.twoGhzLabel,
+                              cs.twoGhzActive ? "ON" : "-");
+                _oled->setCursor(0, 44);
+                _oled->printf("%s%s%s",
+                              cs.wifiRidActive ? "WiFi " : "",
+                              cs.bleRidActive  ? "BLE "  : "",
+                              cs.djiRidActive  ? "DJI"   : "");
+                _oled->setCursor(0, 56);
+                _oled->print("LONG=stop");
+                _oled->display();
+
+                lastCombRefresh = millis();
                 _needsRedraw = false;
             }
         }

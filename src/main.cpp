@@ -22,6 +22,7 @@
 #include "xr1_driver.h"
 #include "xr1_modes.h"
 #include "xr1_rid_modes.h"
+#include "combined_scenarios.h"
 
 // --- OLED Display ---
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
@@ -71,6 +72,12 @@ static void printHelp() {
     Serial.println("  y1 XR1 WiFi ODID  y2 BLE ODID  y3 DJI DroneID");
     Serial.println("  y4 XR1 WiFi NaN   (stub on ESP32C3)");
     Serial.println("  ya All 4 RID      yq Stop XR1 RID");
+    Serial.println("  c1 Racing Drone   ELRS915 + ELRS2.4 + ODID WiFi/BLE");
+    Serial.println("  c2 DJI Consumer   DJI energy + DJI DroneID + ODID BLE");
+    Serial.println("  c3 Long Range FPV Crossfire 915 + ODID WiFi/BLE");
+    Serial.println("  c4 Dual-Band ELRS ELRS 915 + ELRS 2.4 (RF only)");
+    Serial.println("  c5 Everything     ELRS dual-band + all 3 RID transports");
+    Serial.println("  cq Stop combined scenario");
 
     Serial.println("\nINFRASTRUCTURE (False Positive Testing):");
     Serial.println("  i  LoRaWAN US915  Single node, 8 SB2 channels, 30-60s");
@@ -191,6 +198,7 @@ static void stopCurrentMode() {
     if (st == STATE_INFRA_ACTIVE)    infraStop();
     if (st == STATE_XR1_ACTIVE)      xr1ModesStop();
     if (st == STATE_XR1_RID_ACTIVE)  xr1RidStop();
+    if (st == STATE_COMBINED_SCENARIO_ACTIVE) combinedScenarioStop();
 }
 
 // --- Serial command parser ---
@@ -228,13 +236,56 @@ static void handleSerialCommands() {
         break;
 
     // --- Direct mode selection via serial ---
-    case 'c':   // CW Tone
-        stopCurrentMode();
-        cwStart();
-        menuSetState(STATE_CW_ACTIVE);
-        { CwParams p = cwGetParams();
-          Serial.printf("[MODE] CW Tone: %.2f MHz, %d dBm\n", p.freqMHz, p.powerDbm); }
+    case 'c': {
+        // Sub-char dispatch:
+        //   'c' alone     -> CW tone (legacy behavior)
+        //   'c1'..'c5'    -> Phase 6 combined multi-emitter scenario
+        //   'cq'          -> stop combined scenario
+        delay(80);
+        char sub = '\0';
+        while (Serial.available()) {
+            char ch = Serial.peek();
+            if (ch == '\n' || ch == '\r' || ch == ' ' || ch == '\t') {
+                Serial.read();
+                continue;
+            }
+            sub = Serial.read();
+            break;
+        }
+
+        if (sub == '\0') {
+            // Legacy: CW Tone
+            stopCurrentMode();
+            cwStart();
+            menuSetState(STATE_CW_ACTIVE);
+            CwParams p = cwGetParams();
+            Serial.printf("[MODE] CW Tone: %.2f MHz, %d dBm\n", p.freqMHz, p.powerDbm);
+            break;
+        }
+
+        if (sub == 'q' || sub == 'Q') {
+            combinedScenarioStop();
+            if (menuGetState() == STATE_COMBINED_SCENARIO_ACTIVE) {
+                menuSetState(STATE_MAIN_MENU);
+            }
+            break;
+        }
+
+        bool ok = false;
+        switch (sub) {
+            case '1': stopCurrentMode(); ok = combinedScenarioRacing();     break;
+            case '2': stopCurrentMode(); ok = combinedScenarioDji();        break;
+            case '3': stopCurrentMode(); ok = combinedScenarioLongRange();  break;
+            case '4': stopCurrentMode(); ok = combinedScenarioDualBand();   break;
+            case '5': stopCurrentMode(); ok = combinedScenarioEverything(); break;
+            default:
+                Serial.printf("Unknown c-subcommand: '%c'. Type 'h' for help.\n", sub);
+                break;
+        }
+        if (ok) menuSetState(STATE_COMBINED_SCENARIO_ACTIVE);
+        else if (sub >= '1' && sub <= '5') Serial.println("[COMBINED] scenario start failed");
         break;
+    }
 
     case 'e': { // ELRS FHSS — e[1-6][f/a/u/i][b]
         // Parse optional rate digit, domain letter, binding flag
@@ -619,7 +670,8 @@ void loop() {
                      || st == STATE_CUSTOM_LORA_ACTIVE
                      || st == STATE_INFRA_ACTIVE
                      || st == STATE_XR1_ACTIVE
-                     || st == STATE_XR1_RID_ACTIVE);
+                     || st == STATE_XR1_RID_ACTIVE
+                     || st == STATE_COMBINED_SCENARIO_ACTIVE);
     unsigned long blinkRate = txActive ? 200 : 1000;
 
     if (millis() - lastBlink >= blinkRate) {
