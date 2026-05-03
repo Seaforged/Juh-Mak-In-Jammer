@@ -388,17 +388,16 @@ RidParams ridGetParams() {
 
 #include <NimBLEDevice.h>
 
-// CONFIG_BT_NIMBLE_EXT_ADV=1 in platformio.ini swaps the legacy
-// NimBLEAdvertising/NimBLEAdvertisementData classes for the extended-adv
-// equivalents below. We keep the on-air format BLE 4 Legacy
-// (setLegacyAdvertising(true)) so SENTRY-RF's existing BLE parser path
-// continues to decode the frames; the extended-adv API is just the only
-// surface NimBLE-Arduino exposes when EXT_ADV=1.
-static constexpr uint8_t BLE_ADV_INSTANCE = 0;
+// Standard NimBLE legacy advertising API. The extended-adv API
+// (NimBLEExtAdvertising + setLegacyAdvertising(true)) reports
+// isAdvertising=true on ESP32-S3 but never actually keys the radio --
+// SENTRY-RF observed 93 ambient ads and zero from JJ in the same window
+// while the Ext path was active. The legacy API is well-trodden and
+// works on the S3.
 
-static bool                  _bleReady = false;
-static NimBLEExtAdvertising *_adv      = nullptr;
-static unsigned long         _lastTxMs = 0;
+static bool               _bleReady = false;
+static NimBLEAdvertising *_adv      = nullptr;
+static unsigned long      _lastTxMs = 0;
 // 200 ms refresh cadence: at the 6-slot rotation rate, a passive 1 Hz
 // scan window sees ~5 ODID frames per pass, enough for SENTRY-RF to
 // observe at least one of each message type in the LLLBSO cycle within a
@@ -413,8 +412,10 @@ static bool bleInit() {
         Serial.println("[RID] NimBLE getAdvertising() returned null");
         return false;
     }
+    // BLE_GAP_CONN_MODE_NON = 0 = non-connectable (ADV_NONCONN_IND).
+    _adv->setConnectableMode(BLE_GAP_CONN_MODE_NON);
     _bleReady = true;
-    Serial.println("[RID] NimBLE initialized for ASTM F3411 BLE 4 ODID");
+    Serial.println("[RID] NimBLE legacy adv initialized for ASTM F3411 BLE 4 ODID");
     return true;
 }
 
@@ -434,19 +435,19 @@ static void bleTransmitOdid() {
     svcData[0] = nextBleAdCounter(tempMsg);
     memcpy(svcData + 1, tempMsg, BLE4_ODID_MSG_SIZE);
 
-    NimBLEExtAdvertisement adv;
-    adv.setLegacyAdvertising(true);   // emit BLE 4 Legacy on-air format
-    adv.setConnectable(false);        // ADV_NONCONN_IND
-    adv.setScannable(false);          // do not respond to scan requests
-    adv.setFlags(0x06);               // LE General Disc + BR/EDR Not Supported
-    adv.setServiceData(NimBLEUUID((uint16_t)0xFFFA), svcData, sizeof(svcData));
+    // Stop the controller before swapping the advert payload. NimBLE's
+    // legacy setAdvertisementData() will not update an already-running
+    // instance reliably; the safe pattern is stop -> set -> start.
+    _adv->stop();
 
-    // setInstanceData replaces any previous payload on the instance, even
-    // while advertising is running, so we don't need an explicit stop/start
-    // cycle on every refresh.
-    if (!_adv->setInstanceData(BLE_ADV_INSTANCE, adv)) return;
-    // start() is idempotent for an already-active instance.
-    if (_adv->start(BLE_ADV_INSTANCE)) {
+    NimBLEAdvertisementData advData;
+    advData.setFlags(0x06);  // LE General Disc + BR/EDR Not Supported
+    advData.setServiceData(
+        NimBLEUUID((uint16_t)0xFFFA),
+        std::string(reinterpret_cast<const char*>(svcData), sizeof(svcData)));
+
+    _adv->setAdvertisementData(advData);
+    if (_adv->start()) {
         _bleCount++;
     }
 }
@@ -476,7 +477,7 @@ void ridStart() {
 
 void ridStop() {
     if (_bleReady && _adv != nullptr) {
-        _adv->stop(BLE_ADV_INSTANCE);
+        _adv->stop();
     }
     _ridRunning = false;
     Serial.printf("[RID] BLE advertising stopped (%lu adverts)\n",
