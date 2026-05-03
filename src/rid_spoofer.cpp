@@ -395,9 +395,10 @@ RidParams ridGetParams() {
 // while the Ext path was active. The legacy API is well-trodden and
 // works on the S3.
 
-static bool               _bleReady = false;
-static NimBLEAdvertising *_adv      = nullptr;
-static unsigned long      _lastTxMs = 0;
+static bool               _bleReady   = false;
+static bool               _advStarted = false;
+static NimBLEAdvertising *_adv        = nullptr;
+static unsigned long      _lastTxMs   = 0;
 // 200 ms refresh cadence: at the 6-slot rotation rate, a passive 1 Hz
 // scan window sees ~5 ODID frames per pass, enough for SENTRY-RF to
 // observe at least one of each message type in the LLLBSO cycle within a
@@ -435,19 +436,26 @@ static void bleTransmitOdid() {
     svcData[0] = nextBleAdCounter(tempMsg);
     memcpy(svcData + 1, tempMsg, BLE4_ODID_MSG_SIZE);
 
-    // Stop the controller before swapping the advert payload. NimBLE's
-    // legacy setAdvertisementData() will not update an already-running
-    // instance reliably; the safe pattern is stop -> set -> start.
-    _adv->stop();
-
     NimBLEAdvertisementData advData;
     advData.setFlags(0x06);  // LE General Disc + BR/EDR Not Supported
     advData.setServiceData(
         NimBLEUUID((uint16_t)0xFFFA),
         std::string(reinterpret_cast<const char*>(svcData), sizeof(svcData)));
 
+    // Update payload on every refresh; NimBLE's controller picks up new
+    // bytes on the next adv event automatically. Call start() ONCE only:
+    // repeated start() on an already-running advertiser wedges NimBLE's
+    // state machine after ~60 s (observed: 675 events in the first 60 s,
+    // then silent thereafter).
     _adv->setAdvertisementData(advData);
-    if (_adv->start()) {
+
+    if (!_advStarted) {
+        if (_adv->start()) {
+            _advStarted = true;
+            _bleCount++;
+            Serial.println("[RID] BLE advertising started");
+        }
+    } else {
         _bleCount++;
     }
 }
@@ -467,11 +475,12 @@ void ridStart() {
         return;
     }
     _bleCount = 0;
+    _advStarted = false;
     memset(_bleAdCounters, 0, sizeof(_bleAdCounters));
     _bleRotation = 0;
     _ridRunning = true;
     _lastTxMs = 0;  // fire on next ridUpdate() tick
-    Serial.printf("[RID] BLE ASTM F3411 advertising started: %s @ %.4f,%.4f\n",
+    Serial.printf("[RID] BLE ASTM F3411 advertising arming: %s @ %.4f,%.4f\n",
                   _drone.serialNumber, _drone.latitude, _drone.longitude);
 }
 
@@ -479,6 +488,7 @@ void ridStop() {
     if (_bleReady && _adv != nullptr) {
         _adv->stop();
     }
+    _advStarted = false;
     _ridRunning = false;
     Serial.printf("[RID] BLE advertising stopped (%lu adverts)\n",
                   (unsigned long)_bleCount);
@@ -490,6 +500,18 @@ void ridUpdate() {
     if ((now - _lastTxMs) < RID_TX_INTERVAL_MS) return;
     _lastTxMs = now;
     bleTransmitOdid();
+
+    // Periodic health log (every 30 s). Operationally useful: confirms
+    // NimBLE's controller-side advertising state matches our counter,
+    // so a wedge would surface as "count incrementing but adv=0".
+    static uint32_t lastHealthMs = 0;
+    if ((now - lastHealthMs) >= 30000) {
+        lastHealthMs = now;
+        Serial.printf("[RID-HEALTH] BLE count=%lu started=%d adv=%d\n",
+                      (unsigned long)_bleCount,
+                      (int)_advStarted,
+                      (int)(_adv != nullptr ? _adv->isAdvertising() : 0));
+    }
 }
 
 RidParams ridGetParams() {
