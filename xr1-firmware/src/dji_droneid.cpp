@@ -31,9 +31,9 @@ extern "C" void ridWifiRefDown();
 // and match the DroneSecurity NDSS 2023 reversing table.
 //
 //   [0] = OUI type (proprietary DJI value — 0x58 for v2 DroneID frames)
-//   [1..2]  padding / version
-//   [3] = subcommand = 0x10 (Flight Telemetry)
-//   [4]     padding
+//   [1] = subcommand = 0x10 (Flight Telemetry) -- read by SENTRY-RF's
+//         Sprint 1 parser as the byte immediately after the OUI Type
+//   [2..4]  padding / version
 //   [5..6]  sequence (int16 LE)
 //   [7..8]  state_info (uint16 LE bitfield)
 //   [9..24] serial_number ASCII[16] null-padded
@@ -152,7 +152,12 @@ static void buildDjiPayload(uint8_t *p /*79 bytes*/) {
 
     memset(p, 0, 79);
     p[0] = DJI_OUI_TYPE;
-    p[3] = 0x10;                         // subcommand: flight telemetry
+    // SENTRY-RF Sprint 1 parser reads the byte immediately after the OUI Type
+    // (wire offset 5 within the IE = payload[1]) as the DJI frame "subcommand"
+    // -- 0x10 = location/altitude telemetry, 0x11 = pilot info. The previous
+    // `p[3] = 0x10` placed the byte two slots too late and left p[1] as the
+    // memset zero, which their parser surfaced as "0x00 vs expected 0x10/0x11".
+    p[1] = 0x10;                         // subcommand: flight telemetry
     putU16le(p + 5, s_seq++);            // sequence
 
     // state_info bitfield (non-static so behavioural analysers see the

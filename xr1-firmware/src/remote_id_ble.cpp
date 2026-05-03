@@ -15,6 +15,13 @@
 
 #include <Arduino.h>
 #include <string.h>
+#include "esp_idf_version.h"
+
+// Arduino-ESP32 v3 (ESP-IDF 5.x) dropped Bluedroid host support for ESP32-C3,
+// shipping NimBLE only. The implementation below targets the Bluedroid GAP
+// API; on IDF 5+ we compile a no-op stub so WiFi ODID and DJI IE 221 still
+// build and ship while a NimBLE port is tracked separately.
+#if defined(ESP_IDF_VERSION_MAJOR) && ESP_IDF_VERSION_MAJOR < 5
 
 #include "esp_bt.h"
 #include "esp_bt_main.h"
@@ -323,3 +330,22 @@ void remoteIdBleStop() {
     Serial.printf("[XR1-RID] BLE adv OFF (%u refreshes)\n",
                   (unsigned)g_ridStatus.bleFrameCount);
 }
+
+#else  // ESP_IDF_VERSION_MAJOR >= 5 -- Bluedroid unavailable on C3, stub out.
+
+extern RemoteIdStatus g_ridStatus;
+
+extern "C" void ridBleTick() {}
+
+bool remoteIdBleStart(const RemoteIdState &state) {
+    (void)state;
+    g_ridStatus.bleActive = false;
+    Serial.println("[XR1-RID] BLE stubbed (Arduino-ESP32 v3 dropped Bluedroid for C3)");
+    return false;
+}
+
+void remoteIdBleStop() {
+    g_ridStatus.bleActive = false;
+}
+
+#endif  // ESP_IDF_VERSION_MAJOR < 5

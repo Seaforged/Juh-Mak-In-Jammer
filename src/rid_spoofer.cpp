@@ -1,11 +1,21 @@
 #include <Arduino.h>
+#include "rid_spoofer.h"
+#include "esp_idf_version.h"
+
+// Arduino-ESP32 v3 (ESP-IDF 5.x) dropped Bluedroid host support for ESP32-S3,
+// shipping NimBLE only. This file's BLE path targets the Bluedroid GAP API,
+// so on IDF 5+ we compile a no-op stub. Remote ID emission has moved to the
+// XR1 board in v3.0 anyway; the T3-S3 RID legacy path is kept for backward
+// compatibility but is non-functional on the current toolchain until a
+// NimBLE port lands.
+#if defined(ESP_IDF_VERSION_MAJOR) && ESP_IDF_VERSION_MAJOR < 5
+
 #include <esp_wifi.h>
 #include <esp_event.h>
 #include <nvs_flash.h>
 #include <esp_bt.h>
 #include <esp_bt_main.h>
 #include <esp_gap_ble_api.h>
-#include "rid_spoofer.h"
 
 // ============================================================
 // ASTM F3411 Open Drone ID — Manual Message Encoding
@@ -518,3 +528,24 @@ RidParams ridGetParams() {
         _ridRunning,
     };
 }
+
+#else  // ESP_IDF_VERSION_MAJOR >= 5 -- Bluedroid unavailable, stub out.
+
+void ridInit() {
+    Serial.println("[RID] T3-S3 legacy RID stubbed (Arduino-ESP32 v3 dropped Bluedroid for S3)");
+    Serial.println("[RID] Use XR1 RID transports via the y-commands instead.");
+}
+
+void ridStart() {
+    Serial.println("[RID] start ignored: T3-S3 legacy RID stubbed -- use XR1 (y-commands)");
+}
+
+void ridStop() {}
+
+void ridUpdate() {}
+
+RidParams ridGetParams() {
+    return RidParams{0, 0, 0.0, 0.0, 0.0f, false};
+}
+
+#endif  // ESP_IDF_VERSION_MAJOR < 5

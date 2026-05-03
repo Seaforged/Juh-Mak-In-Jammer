@@ -195,6 +195,13 @@ static constexpr size_t BEACON_HEADER_SZ = sizeof(BEACON_HEADER);
 static constexpr uint8_t ODID_OUI[3] = { 0xFA, 0x0B, 0xBC };
 static constexpr uint8_t ODID_OUI_TYPE = 0x0D;
 
+// ASTM F3411-22a §6.4 places a 1-byte Send Counter between OUI Type and the
+// MessagePack. Receivers (including SENTRY-RF's decodeBeaconRID) skip
+// OUI(3) + OUI Type(1) + Counter(1) = 5 bytes before parsing the pack;
+// omitting the counter shifts every downstream field by one and the pack
+// decode fails.
+static uint8_t s_wifiCounter = 0;
+
 static uint8_t s_srcMac[6] = { 0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE };
 
 static uint8_t s_frame[256];
@@ -213,13 +220,14 @@ static void rebuildFrame() {
     if (packLen <= 0) { s_frameLen = 0; return; }
 
     size_t pos = BEACON_HEADER_SZ;
-    // Vendor IE: element ID 0xDD, length, OUI, OUI type, pack
+    // Vendor IE: element ID 0xDD, length, OUI(3), OUI type, send counter, pack
     s_frame[pos++] = 0xDD;
-    s_frame[pos++] = (uint8_t)(3 + 1 + packLen);  // IE length
+    s_frame[pos++] = (uint8_t)(3 + 1 + 1 + packLen);  // IE length: OUI+OUIType+Counter+Pack
     s_frame[pos++] = ODID_OUI[0];
     s_frame[pos++] = ODID_OUI[1];
     s_frame[pos++] = ODID_OUI[2];
     s_frame[pos++] = ODID_OUI_TYPE;
+    s_frame[pos++] = s_wifiCounter++;             // ASTM F3411-22a §6.4 send counter
     memcpy(s_frame + pos, pack, packLen);
     pos += packLen;
 
