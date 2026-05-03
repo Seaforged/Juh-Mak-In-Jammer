@@ -10,6 +10,7 @@
 #include "crossfire.h"         // crossfireStart, crossfireStop
 #include "xr1_modes.h"         // xr1ModeElrs2g4Start, xr1ModeDjiEnergyStart, xr1ModesStop
 #include "xr1_rid_modes.h"     // xr1RidStart, xr1RidStop, XR1_RID_* masks
+#include "rid_spoofer.h"       // ridStart, ridStop, ridUpdate (T3-S3 NimBLE BLE)
 #include "protocol_params.h"   // ELRS_RATE_*, ELRS_DOMAIN_*
 
 #include <Arduino.h>
@@ -48,15 +49,15 @@ bool combinedScenarioRacing() {
     if (!elrsStart())                                   return false;
     if (!elrsGetParams().running)                       { elrsStop(); return false; }
     if (!xr1ModeElrs2g4Start(0))                       { elrsStop(); return false; }
-    const bool ridOk = xr1RidStart(XR1_RID_WIFI | XR1_RID_BLE);
-    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed -- running without RID");
-
-    // Query actual per-transport activeMask so a partial start (e.g. WiFi
-    // OK but BLE stack init failed) reflects truthfully rather than the
-    // single ridOk gating every flag.
+    // BLE goes to the T3-S3's NimBLE backend (idle 2.4 GHz radio); the XR1
+    // only gets WiFi here. Bluedroid was dropped from Arduino-ESP32 v3 for
+    // the C3, so the XR1 BLE path returns BLE_FAIL.
+    const bool ridOk = xr1RidStart(XR1_RID_WIFI);
+    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed -- running without WiFi RID");
+    ridStart();   // T3-S3 NimBLE BLE
     const Xr1RidStatus rs = xr1RidGetStatus();
     const bool wifiOk = (rs.activeMask & XR1_RID_WIFI) != 0;
-    const bool bleOk  = (rs.activeMask & XR1_RID_BLE)  != 0;
+    const bool bleOk  = ridGetParams().running;
 
     s_status = { COMBINED_RACING, "Racing Drone",
                  true, true,
@@ -66,7 +67,7 @@ bool combinedScenarioRacing() {
                 "ELRS-FCC915 40ch SF6/BW500 200Hz implicit 0x12 | 10 dBm",
                 "ELRS-ISM2G4 80ch SF5/BW812.5 CR4-6 pre12 implicit 500Hz | 12 dBm",
                 "ODID beacon ch1/6/11 1Hz | Serial: " "JJ-XR1-TEST-001",
-                "ODID Legacy ADV 6-slot LLLBSO | UUID 0xFFFA");
+                "ODID Legacy ADV 6-slot LLLBSO | UUID 0xFFFA (T3-S3 NimBLE)");
     return true;
 }
 
@@ -74,10 +75,11 @@ bool combinedScenarioDji() {
     combinedScenarioStop();
     // No sub-GHz emitter in DJI scenarios — DJI control is 2.4 GHz only.
     if (!xr1ModeDjiEnergyStart())                       return false;
-    const bool ridOk = xr1RidStart(XR1_RID_DJI | XR1_RID_BLE);
-    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed -- running without RID");
+    const bool ridOk = xr1RidStart(XR1_RID_DJI);
+    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed -- running without DJI RID");
+    ridStart();   // T3-S3 NimBLE BLE
     const Xr1RidStatus rs = xr1RidGetStatus();
-    const bool bleOk = (rs.activeMask & XR1_RID_BLE) != 0;
+    const bool bleOk = ridGetParams().running;
     const bool djiOk = (rs.activeMask & XR1_RID_DJI) != 0;
 
     s_status = { COMBINED_DJI, "DJI Consumer",
@@ -88,7 +90,7 @@ bool combinedScenarioDji() {
                 nullptr,
                 "DJI-energy GFSK 250k/50k 20ch 2400.5-2481.5MHz dwell 50ms | 12 dBm",
                 "DJI DroneID OUI 26:37:12 200ms ch1/6/11 | Serial: " "JJ-XR1-TEST-001",
-                "ODID Legacy ADV 6-slot LLLBSO | UUID 0xFFFA");
+                "ODID Legacy ADV 6-slot LLLBSO | UUID 0xFFFA (T3-S3 NimBLE)");
     Serial.println("  NOTE: real DJI video is OFDM; LR1121 GFSK is energy approximation only");
     return true;
 }
@@ -97,11 +99,12 @@ bool combinedScenarioLongRange() {
     combinedScenarioStop();
     crossfireStart();   // Crossfire FSK 150 Hz @ 915
     if (!crossfireGetParams().running)                  return false;
-    const bool ridOk = xr1RidStart(XR1_RID_WIFI | XR1_RID_BLE);
-    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed -- running without RID");
+    const bool ridOk = xr1RidStart(XR1_RID_WIFI);
+    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed -- running without WiFi RID");
+    ridStart();   // T3-S3 NimBLE BLE
     const Xr1RidStatus rs = xr1RidGetStatus();
     const bool wifiOk = (rs.activeMask & XR1_RID_WIFI) != 0;
-    const bool bleOk  = (rs.activeMask & XR1_RID_BLE)  != 0;
+    const bool bleOk  = ridGetParams().running;
 
     s_status = { COMBINED_LONGRANGE, "Long Range FPV",
                  true, false, wifiOk, bleOk, false,
@@ -110,7 +113,7 @@ bool combinedScenarioLongRange() {
                 "Crossfire-915 FSK 85kbps ~150Hz | 10 dBm",
                 nullptr,
                 "ODID beacon ch1/6/11 1Hz | Serial: " "JJ-XR1-TEST-001",
-                "ODID Legacy ADV 6-slot LLLBSO | UUID 0xFFFA");
+                "ODID Legacy ADV 6-slot LLLBSO | UUID 0xFFFA (T3-S3 NimBLE)");
     return true;
 }
 
@@ -140,11 +143,14 @@ bool combinedScenarioEverything() {
     if (!elrsStart())                                   return false;
     if (!elrsGetParams().running)                       { elrsStop(); return false; }
     if (!xr1ModeElrs2g4Start(0))                       { elrsStop(); return false; }
-    const bool ridOk = xr1RidStart(XR1_RID_ALL);    // WiFi ODID + BLE ODID + DJI DroneID
-    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed -- running without RID");
+    // XR1 owns WiFi ODID + DJI IE 221; T3-S3 owns BLE via NimBLE on its
+    // otherwise-idle 2.4 GHz radio. Clean radio separation, no contention.
+    const bool ridOk = xr1RidStart(XR1_RID_WIFI | XR1_RID_DJI);
+    if (!ridOk) Serial.println("[COMBINED] warning: XR1 RID start failed -- running without WiFi/DJI RID");
+    ridStart();   // T3-S3 NimBLE BLE
     const Xr1RidStatus rs = xr1RidGetStatus();
     const bool wifiOk = (rs.activeMask & XR1_RID_WIFI) != 0;
-    const bool bleOk  = (rs.activeMask & XR1_RID_BLE)  != 0;
+    const bool bleOk  = ridGetParams().running;
     const bool djiOk  = (rs.activeMask & XR1_RID_DJI)  != 0;
 
     s_status = { COMBINED_EVERYTHING, "Everything",
@@ -154,15 +160,19 @@ bool combinedScenarioEverything() {
                 "ELRS-FCC915 40ch SF6/BW500 200Hz implicit 0x12 | 10 dBm",
                 "ELRS-ISM2G4 80ch SF5/BW812.5 500Hz CR4-6 pre12 implicit | 12 dBm",
                 "ODID beacon 1Hz + DJI DroneID 5Hz ch1/6/11 | Serial: " "JJ-XR1-TEST-001",
-                "ODID Legacy ADV 6-slot LLLBSO | UUID 0xFFFA");
+                "ODID Legacy ADV 6-slot LLLBSO | UUID 0xFFFA (T3-S3 NimBLE)");
     return true;
 }
 
-// ----- sub-GHz update pump -------------------------------------------------
+// ----- update pump ---------------------------------------------------------
+// Pumps both the sub-GHz FHSS hopper and the T3-S3 NimBLE BLE refresh.
+// XR1 transports self-pace over UART, so they don't need a tick from here.
 void combinedScenarioUpdate() {
-    if (!s_status.subGhzActive) return;
-    if (s_status.id == COMBINED_LONGRANGE) crossfireUpdate();
-    else                                   elrsUpdate();
+    if (s_status.subGhzActive) {
+        if (s_status.id == COMBINED_LONGRANGE) crossfireUpdate();
+        else                                   elrsUpdate();
+    }
+    if (s_status.bleRidActive) ridUpdate();
 }
 
 // ----- stop ----------------------------------------------------------------
@@ -178,10 +188,12 @@ void combinedScenarioStop() {
     }
     // XR1 LR1121
     if (s_status.twoGhzActive)  xr1ModesStop();
-    // XR1 WiFi/BLE/DJI (RID) — single call tears down all transports
-    if (s_status.wifiRidActive || s_status.bleRidActive || s_status.djiRidActive) {
+    // XR1 WiFi/DJI (RID) — single call tears down all XR1 transports
+    if (s_status.wifiRidActive || s_status.djiRidActive) {
         xr1RidStop();
     }
+    // T3-S3 NimBLE BLE
+    if (s_status.bleRidActive) ridStop();
 
     Serial.printf("[COMBINED: %s] stopped\n", s_status.name);
     s_status = { COMBINED_NONE, "None",
