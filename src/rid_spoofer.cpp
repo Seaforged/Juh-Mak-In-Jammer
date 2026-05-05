@@ -436,13 +436,29 @@ static bool bleInit() {
     }
     _adv->setConnectableMode(BLE_GAP_CONN_MODE_NON);
 
-    // Initial placeholder advertisement so start() commits a non-empty
-    // buffer to the controller right away. Without this, the canonical
-    // bisect (docs/30.md) showed empty PDUs on the air despite start
-    // returning success.
+    // Set the FULL 24-byte ODID Location message at init time, not a
+    // 2-byte placeholder. SENTRY-RF's raw-AD walk (per docs/33.md)
+    // confirmed the previous 2-byte placeholder was what reached the
+    // air -- the 1 Hz stop/set/start cycle in bleTransmitOdid never
+    // successfully updated the payload because the main loop's
+    // SX1262 SPI / OLED I2C / XR1 UART blocking ops corrupt the HCI
+    // command sequence mid-flight. Static one-shot bypasses that.
+    //
+    // _drone fields are read by buildLocationMsg, so populate them
+    // here too -- ridInit() will (idempotently) call this again
+    // later. Without this the Location msg encodes (0,0) before
+    // ridInit runs.
+    initDroneDefaults();
+
+    uint8_t tempMsg[ODID_MSG_SIZE];
+    buildLocationMsg(tempMsg);
+
+    uint8_t initSvc[1 + BLE4_ODID_MSG_SIZE];
+    initSvc[0] = 0x00;  // counter
+    memcpy(initSvc + 1, tempMsg, BLE4_ODID_MSG_SIZE);
+
     NimBLEAdvertisementData initData;
     initData.setFlags(0x06);  // LE General Disc + BR/EDR Not Supported
-    uint8_t initSvc[2] = { 0x00, 0x00 };
     initData.setServiceData(
         NimBLEUUID((uint16_t)0xFFFA),
         std::string(reinterpret_cast<const char*>(initSvc), sizeof(initSvc)));
@@ -453,39 +469,23 @@ static bool bleInit() {
     }
 
     _bleReady = true;
-    Serial.printf("[RID] NimBLE init: canonical pattern, power=%d dBm\n", actualDbm);
+    Serial.printf("[RID] NimBLE init: full 24B ODID Location set once, power=%d dBm\n", actualDbm);
     return true;
 }
 
 static void bleTransmitOdid() {
     if (!_bleReady || _adv == nullptr) return;
-
-    uint8_t tempMsg[ODID_MSG_SIZE];
-    buildBleRotatingMsg(tempMsg);
-
-    uint8_t svcData[1 + BLE4_ODID_MSG_SIZE];
-    svcData[0] = nextBleAdCounter(tempMsg);
-    memcpy(svcData + 1, tempMsg, BLE4_ODID_MSG_SIZE);
-
-    // Stop / set / start cycle. start() is what actually commits the
-    // adv data through HCI to the controller; setAdvertisementData
-    // alone only stages the bytes in NimBLE's host-side std::string.
-    _adv->stop();
-
-    NimBLEAdvertisementData advData;
-    advData.setFlags(0x06);  // LE General Disc + BR/EDR Not Supported
-    advData.setServiceData(
-        NimBLEUUID((uint16_t)0xFFFA),
-        std::string(reinterpret_cast<const char*>(svcData), sizeof(svcData)));
-
-    _adv->setAdvertisementData(advData);
-    _adv->setConnectableMode(BLE_GAP_CONN_MODE_NON);
-
-    if (_adv->start()) {
-        _bleCount++;
-    } else {
-        Serial.println("[RID] BLE start FAILED");
-    }
+    // docs/33.md: data was set ONCE in bleInit() with the full 24-byte
+    // ODID Location message. No stop/set/start cycling here -- the
+    // main loop's blocking SX1262/OLED/XR1 ops corrupt the HCI
+    // command sequence when we try to update mid-flight. The
+    // controller keeps broadcasting the initial payload indefinitely.
+    //
+    // Trade-off: sacrifices the 6-slot LLLBSO rotation; one static
+    // Location frame goes out forever. Real fix for rotation is a
+    // dedicated FreeRTOS task for BLE that can't be blocked by the
+    // main loop -- follow-up work, not in scope here.
+    _bleCount++;
 }
 
 void ridInit() {
