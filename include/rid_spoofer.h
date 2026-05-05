@@ -48,4 +48,10 @@ void ridStop();
 void ridUpdate();            // call every loop() — handles TX timing
 RidParams ridGetParams();
 
+// docs/32.md: bring up the BLE controller as early as possible, before
+// SX1262/OLED/XR1 inits, to test whether one of them interferes with
+// BLE advertising. Idempotent -- safe to call again later from
+// ridStart().
+void ridBleInitEarly();
+
 #endif // RID_SPOOFER_H

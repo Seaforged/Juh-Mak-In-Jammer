@@ -158,6 +158,12 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
 
+    // docs/32.md: pre-init NimBLE before any SX1262/OLED/XR1 init so we
+    // can isolate whether one of those subsystems interferes with BLE
+    // advertising. ridBleInitEarly() is idempotent; ridStart() will skip
+    // bleInit() later when it sees _bleReady.
+    ridBleInitEarly();
+
     Serial.println();
     Serial.println("================================");
     Serial.printf("  %s v%s\n", JAMMER_NAME, JAMMER_VERSION);

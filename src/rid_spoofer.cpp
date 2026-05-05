@@ -342,6 +342,12 @@ void ridInit() {
     initDroneDefaults();
 }
 
+void ridBleInitEarly() {
+    // Bluedroid branch is dead code on Arduino-ESP32 v3; nothing to
+    // pre-init. The IDF >= 5 branch overrides this with a real early
+    // bring-up of NimBLE.
+}
+
 void ridStart() {
     if (!_wifiReady) wifiInit();
     if (!_bleReady)  bleInit();
@@ -387,76 +393,73 @@ RidParams ridGetParams() {
 // ------------------------------------------------------------
 
 #include <NimBLEDevice.h>
-// Direct NimBLE host API: bypass NimBLEAdvertisementData entirely. The C++
-// wrapper buffers advertisement bytes at the host and never pushes them to
-// the controller's adv buffer -- nRF Connect confirmed an empty
-// ADV_NONCONN_IND PDU despite host-side isAdvertising()==true. These
-// headers expose ble_gap_adv_set_data / ble_gap_adv_start /
-// ble_gap_adv_active (controller ground truth) and ble_hs_id_set_rnd.
-#include "host/ble_gap.h"
-#include "host/ble_hs_id.h"
 
-static bool          _bleReady   = false;
-static bool          _advStarted = false;
-static unsigned long _lastTxMs   = 0;
-// 200 ms refresh cadence: at the 6-slot rotation rate, a passive 1 Hz
-// scan window sees ~5 ODID frames per pass, enough for SENTRY-RF to
-// observe at least one of each message type in the LLLBSO cycle within a
-// few seconds. Stays well under the legacy adv interval ceiling.
-static constexpr unsigned long RID_TX_INTERVAL_MS = 200;
+// docs/28-31.md bisect: the canonical NimBLE-Arduino iBeacon example
+// puts FFFA Service Data on the air, and we proved -- via incremental
+// minimal changes -- that setServiceData + non-connectable mode + the
+// full 24-byte ODID payload all work in isolation. The bug was the
+// surrounding JJ binary. The fix is to apply the canonical pattern:
+//
+//   1. NimBLEDevice::init + setPower
+//   2. getAdvertising + setConnectableMode + setAdvertisementData
+//   3. start() ONCE with initial (placeholder) data so the controller
+//      commits a real adv buffer right away
+//   4. For each refresh: stop, setAdvertisementData(new), start again
+//      at 1 Hz (60 HCI cmds/min, well under the wedge threshold)
+//
+// All references to ble_gap_*, ble_hs_id_*, raw 31-byte hand-assembly,
+// ble_gap_adv_active(), and the 200 ms cadence are gone.
+
+static bool               _bleReady = false;
+static NimBLEAdvertising *_adv      = nullptr;
+static unsigned long      _lastTxMs = 0;
+// 1 Hz cadence. The 6-slot LLLBSO rotation now takes 6 s instead of
+// 1.2 s, still well inside SENTRY-RF's 30-second assembly cache. At 1 Hz
+// we issue 3 HCI cmds/sec (stop+set+start), well below the ~300-cmd
+// queue saturation that bit the 5 Hz path.
+static constexpr unsigned long RID_TX_INTERVAL_MS = 1000;
 
 static bool bleInit() {
     if (_bleReady) return true;
 
-    // NimBLEDevice::init() brings up the NimBLE host stack (controller +
-    // host task). The "JJ-RID" name is informational here only -- we no
-    // longer use NimBLEAdvertising, so the name does not appear in the
-    // advert. SENTRY-RF identifies JJ via the ASTM Service Data UUID
-    // 0xFFFA, not the device name.
     NimBLEDevice::init("JJ-RID");
     // Crank advertising TX to the API max. NimBLE-Arduino takes int8_t
-    // dBm; 21 will be clamped by the controller to whatever the chip
-    // and the ESP-IDF coex config allow (typically +9 dBm out-of-box,
-    // up to +20 dBm with CONFIG_BT_CTRL_TX_POWER tuned).
+    // dBm; the controller clamps to whatever CONFIG_BT_CTRL_TX_POWER
+    // allows (typically +9 dBm out-of-box).
     NimBLEDevice::setPower(21, NimBLETxPowerType::Advertise);
     const int actualDbm = NimBLEDevice::getPower(NimBLETxPowerType::Advertise);
 
-    // NimBLEDevice::init blocks until host/controller sync, but we have
-    // observed the controller's advertising buffer being clobbered by
-    // post-sync activity (GAP service characteristic writes, default
-    // adv-instance setup, coex negotiation). 500 ms gives that activity
-    // time to settle before we start writing our own adv data.
-    vTaskDelay(pdMS_TO_TICKS(500));
+    _adv = NimBLEDevice::getAdvertising();
+    if (_adv == nullptr) {
+        Serial.println("[RID] NimBLE getAdvertising() returned null");
+        return false;
+    }
+    _adv->setConnectableMode(BLE_GAP_CONN_MODE_NON);
 
-    // Static random address. Per Bluetooth Core: top two bits of the MSB
-    // (little-endian, so byte index 5) must be 1-1. ble_hs_id_set_rnd
-    // takes a bare 6-byte buffer in host (little-endian) byte order.
-    uint8_t rnd_addr[6];
-    esp_fill_random(rnd_addr, 6);
-    rnd_addr[5] |= 0xC0;
-    int rc = ble_hs_id_set_rnd(rnd_addr);
-    if (rc != 0) {
-        Serial.printf("[RID] ble_hs_id_set_rnd FAILED rc=%d\n", rc);
+    // Initial placeholder advertisement so start() commits a non-empty
+    // buffer to the controller right away. Without this, the canonical
+    // bisect (docs/30.md) showed empty PDUs on the air despite start
+    // returning success.
+    NimBLEAdvertisementData initData;
+    initData.setFlags(0x06);  // LE General Disc + BR/EDR Not Supported
+    uint8_t initSvc[2] = { 0x00, 0x00 };
+    initData.setServiceData(
+        NimBLEUUID((uint16_t)0xFFFA),
+        std::string(reinterpret_cast<const char*>(initSvc), sizeof(initSvc)));
+    _adv->setAdvertisementData(initData);
+    if (!_adv->start()) {
+        Serial.println("[RID] initial _adv->start() FAILED");
         return false;
     }
 
     _bleReady = true;
-    Serial.printf("[RID] NimBLE direct HCI init: power=%d dBm addr=%02X:%02X:%02X:%02X:%02X:%02X\n",
-                  actualDbm,
-                  rnd_addr[5], rnd_addr[4], rnd_addr[3],
-                  rnd_addr[2], rnd_addr[1], rnd_addr[0]);
+    Serial.printf("[RID] NimBLE init: canonical pattern, power=%d dBm\n", actualDbm);
     return true;
 }
 
 static void bleTransmitOdid() {
-    if (!_bleReady) return;
+    if (!_bleReady || _adv == nullptr) return;
 
-    // Build one 25-byte ODID message, take the first 23 (BLE 4 cap), and
-    // prepend the 1-byte rotating per-msg-type counter that ASTM expects in
-    // the upper byte of the Service Data app-code field. Total Service
-    // Data payload = 1 (counter) + 23 (truncated ODID) = 24 bytes; with
-    // the AD header (length + type 0x16 + UUID 0xFFFA) and the Flags AD
-    // (3 bytes) the whole advert lands at 31 bytes exactly.
     uint8_t tempMsg[ODID_MSG_SIZE];
     buildBleRotatingMsg(tempMsg);
 
@@ -464,73 +467,25 @@ static void bleTransmitOdid() {
     svcData[0] = nextBleAdCounter(tempMsg);
     memcpy(svcData + 1, tempMsg, BLE4_ODID_MSG_SIZE);
 
-    // Raw 31-byte legacy advertisement payload, hand-assembled per
-    // Bluetooth Core Vol 3 Part C 11. No NimBLE wrapper involvement.
-    uint8_t adv[31];
-    uint8_t pos = 0;
+    // Stop / set / start cycle. start() is what actually commits the
+    // adv data through HCI to the controller; setAdvertisementData
+    // alone only stages the bytes in NimBLE's host-side std::string.
+    _adv->stop();
 
-    // Flags AD (3 bytes total: len, type, value)
-    adv[pos++] = 0x02;   // length
-    adv[pos++] = 0x01;   // AD type: Flags
-    adv[pos++] = 0x06;   // LE General Disc + BR/EDR Not Supported
+    NimBLEAdvertisementData advData;
+    advData.setFlags(0x06);  // LE General Disc + BR/EDR Not Supported
+    advData.setServiceData(
+        NimBLEUUID((uint16_t)0xFFFA),
+        std::string(reinterpret_cast<const char*>(svcData), sizeof(svcData)));
 
-    // Service Data 16-bit UUID AD (28 bytes total: len, type, UUID lo/hi, payload)
-    // length = 1 (type) + 2 (UUID) + 24 (svcData) = 27
-    adv[pos++] = (uint8_t)(1 + 2 + sizeof(svcData));
-    adv[pos++] = 0x16;   // AD type: Service Data 16-bit UUID
-    adv[pos++] = 0xFA;   // UUID 0xFFFA low byte (ASTM F3411 ODID)
-    adv[pos++] = 0xFF;   // UUID 0xFFFA high byte
-    memcpy(&adv[pos], svcData, sizeof(svcData));
-    pos += sizeof(svcData);
-    // pos == 31 exactly
+    _adv->setAdvertisementData(advData);
+    _adv->setConnectableMode(BLE_GAP_CONN_MODE_NON);
 
-    // Push raw bytes straight to the controller. Per Bluetooth Core HCI
-    // LE Set Advertising Data is permitted during active advertising;
-    // the controller swaps in the new payload on the next adv event.
-    int rc = ble_gap_adv_set_data(adv, pos);
-    if (rc != 0) {
-        Serial.printf("[RID] ble_gap_adv_set_data FAILED rc=%d\n", rc);
-        return;
+    if (_adv->start()) {
+        _bleCount++;
+    } else {
+        Serial.println("[RID] BLE start FAILED");
     }
-
-    // Start advertising once. Repeated start() on an already-active
-    // advertiser wedges NimBLE's state machine after ~60s (observed:
-    // 675 events in the first 60s, then silent thereafter).
-    if (!_advStarted) {
-        // First-call diagnostic: dump the exact 31 bytes we just handed
-        // to the controller. If nRF Connect still reports an empty PDU
-        // and these bytes look correct, the bug is past our code.
-        Serial.print("[RID-VERIFY] adv bytes:");
-        for (uint8_t i = 0; i < pos; i++) {
-            Serial.printf(" %02X", adv[i]);
-        }
-        Serial.println();
-
-        struct ble_gap_adv_params adv_params = {};
-        adv_params.conn_mode = BLE_GAP_CONN_MODE_NON;
-        adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
-        adv_params.itvl_min  = 0x00A0;  // 100 ms in 0.625 ms units
-        adv_params.itvl_max  = 0x0140;  // 200 ms
-
-        rc = ble_gap_adv_start(BLE_OWN_ADDR_RANDOM, NULL,
-                               BLE_HS_FOREVER, &adv_params,
-                               NULL, NULL);
-        if (rc != 0) {
-            Serial.printf("[RID] ble_gap_adv_start FAILED rc=%d\n", rc);
-            return;
-        }
-        _advStarted = true;
-        Serial.println("[RID] BLE advertising started (direct HCI)");
-
-        // Confirm controller is actually keying after start. If
-        // ctrl_adv=0 here despite start returning rc=0, NimBLE took
-        // the call but the controller dropped advertising.
-        vTaskDelay(pdMS_TO_TICKS(100));
-        Serial.printf("[RID-VERIFY] ctrl_adv=%d after start+100ms\n",
-                      ble_gap_adv_active());
-    }
-
-    _bleCount++;
 }
 
 void ridInit() {
@@ -538,8 +493,15 @@ void ridInit() {
     _wifiCount = 0;
     _bleCount  = 0;
     initDroneDefaults();
-    Serial.println("[RID] T3-S3 BLE RID ready (NimBLE direct HCI backend)");
+    Serial.println("[RID] T3-S3 BLE RID ready (NimBLE canonical pattern)");
     Serial.println("[RID] WiFi ODID + DJI IE 221 remain on the XR1.");
+}
+
+void ridBleInitEarly() {
+    // docs/32.md: bring up NimBLE before any SX1262/OLED/XR1 init in
+    // setup(), to test whether one of those subsystems interferes with
+    // the BLE controller. bleInit() is idempotent via _bleReady.
+    bleInit();
 }
 
 void ridStart() {
@@ -548,7 +510,6 @@ void ridStart() {
         return;
     }
     _bleCount = 0;
-    _advStarted = false;
     memset(_bleAdCounters, 0, sizeof(_bleAdCounters));
     _bleRotation = 0;
     _ridRunning = true;
@@ -558,10 +519,9 @@ void ridStart() {
 }
 
 void ridStop() {
-    if (_bleReady) {
-        ble_gap_adv_stop();
+    if (_bleReady && _adv != nullptr) {
+        _adv->stop();
     }
-    _advStarted = false;
     _ridRunning = false;
     Serial.printf("[RID] BLE advertising stopped (%lu adverts)\n",
                   (unsigned long)_bleCount);
@@ -574,17 +534,15 @@ void ridUpdate() {
     _lastTxMs = now;
     bleTransmitOdid();
 
-    // Periodic health log (every 30 s). ble_gap_adv_active() is the
-    // controller-side ground truth -- a started=1 ctrl_adv=0 split means
-    // NimBLE accepted start() but the controller has dropped advertising,
-    // the failure mode that surfaced after the EXT_ADV swap.
+    // Periodic health log (every 30 s). isAdvertising() is NimBLE's
+    // host-side flag; with the 1 Hz stop/set/start cycle it should be 1
+    // between adv events.
     static uint32_t lastHealthMs = 0;
     if ((now - lastHealthMs) >= 30000) {
         lastHealthMs = now;
-        Serial.printf("[RID-HEALTH] BLE count=%lu started=%d ctrl_adv=%d\n",
+        Serial.printf("[RID-HEALTH] BLE count=%lu adv=%d\n",
                       (unsigned long)_bleCount,
-                      (int)_advStarted,
-                      (int)ble_gap_adv_active());
+                      (int)(_adv != nullptr ? _adv->isAdvertising() : 0));
     }
 }
 
