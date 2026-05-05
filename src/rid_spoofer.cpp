@@ -475,16 +475,34 @@ static bool bleInit() {
 
 static void bleTransmitOdid() {
     if (!_bleReady || _adv == nullptr) return;
-    // docs/33.md: data was set ONCE in bleInit() with the full 24-byte
-    // ODID Location message. No stop/set/start cycling here -- the
-    // main loop's blocking SX1262/OLED/XR1 ops corrupt the HCI
-    // command sequence when we try to update mid-flight. The
-    // controller keeps broadcasting the initial payload indefinitely.
-    //
-    // Trade-off: sacrifices the 6-slot LLLBSO rotation; one static
-    // Location frame goes out forever. Real fix for rotation is a
-    // dedicated FreeRTOS task for BLE that can't be blocked by the
-    // main loop -- follow-up work, not in scope here.
+    // docs/35.md: live-update the advertising data WITHOUT stop()/
+    // start(). docs/34.md proved that cycling stop/start corrupts the
+    // controller's adv buffer regardless of which thread issues it
+    // (main loop AND a dedicated FreeRTOS task both produced 0 FFFA
+    // on SENTRY-RF despite host-side success). The Bluetooth Core spec
+    // permits HCI LE_SET_ADVERTISING_DATA during active advertising;
+    // the controller swaps in the new payload on the next adv event.
+    // If NimBLE-Arduino's setAdvertisementData() actually issues that
+    // HCI cmd while advertising is up, the LLLBSO rotation works
+    // without disturbing the on-air keying. If it only stages bytes
+    // host-side, on-air stays the static-once payload from bleInit
+    // and we keep what 71ebb1e already ships.
+    uint8_t tempMsg[ODID_MSG_SIZE];
+    buildBleRotatingMsg(tempMsg);
+
+    uint8_t svcData[1 + BLE4_ODID_MSG_SIZE];
+    svcData[0] = nextBleAdCounter(tempMsg);
+    memcpy(svcData + 1, tempMsg, BLE4_ODID_MSG_SIZE);
+
+    NimBLEAdvertisementData advData;
+    advData.setFlags(0x06);  // LE General Disc + BR/EDR Not Supported
+    advData.setServiceData(
+        NimBLEUUID((uint16_t)0xFFFA),
+        std::string(reinterpret_cast<const char*>(svcData), sizeof(svcData)));
+
+    _adv->setAdvertisementData(advData);
+    // Deliberately NO _adv->stop() / _adv->start(). Controller keeps
+    // broadcasting through the update.
     _bleCount++;
 }
 
