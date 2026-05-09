@@ -255,33 +255,46 @@ static bool startGfskFhss(const char *label, float startMhz, float stopMhz,
 }
 
 // ----- public: FrSky ACCST D16 footprint -----------------------------------
+// Bound to two commands: x6 (legacy) and f16 (documented). FOOTPRINT-level
+// emulation -- correct RF envelope, no protocol-correct payloads.
+//
+// Spec (from session brief, docs/1.md):
+//   GFSK, 128 kbps, ~80 kHz deviation
+//   47 channels, pseudo-random hopping at ~111 Hz (~9 ms dwell)
+//   Channel formula: 2404.0 + ch * 1.666 MHz  (ch = 0..46)
+//   -> stop = 2404.0 + 46 * 1.666 = 2480.636 MHz
 bool xr1ModeFrskyStart() {
-    // FrSky ACCST D16 16-ch mode: GFSK 250 kbps / 50 kHz dev, 47 channels
-    // over 2.4 GHz ISM band, 18 ms hop interval. Source:
-    // DIY-Multiprotocol-TX-Module Pktfrsky_ACCST branch.
     return startGfskFhss("FrSky D16 footprint",
-                         2403.5f, 2479.5f,  // ~47ch × ~1.65 MHz spacing ≈ 76 MHz span
-                         47, 18,
-                         250.0f, 50.0f,
-                         true,              // shuffled hop
-                         "GFSK 250k/50k");
+                         2404.0f, 2480.636f,  // 47ch × 1.666 MHz spacing
+                         47, 9,                // 9 ms dwell ≈ 111 Hz
+                         128.0f, 80.0f,        // 128 kbps / 80 kHz dev
+                         true,                 // pseudo-random hop
+                         "GFSK 128k/80k");
 }
 
 // ----- public: FlySky AFHDS 2A footprint -----------------------------------
+// Bound to two commands: x7 (legacy) and f17 (documented). FOOTPRINT-level
+// emulation.
+//
+// Spec (from session brief, docs/1.md):
+//   GFSK, 250 kbps, ~125 kHz deviation
+//   16 channels, hopping at ~286 Hz (~3.5 ms dwell, integer-clamped to 4 ms)
+//   Channel formula: 2408.0 + ch * 4.0 MHz   (ch = 0..15)
+//   -> stop = 2408.0 + 15 * 4.0 = 2468.0 MHz
+//
+// dwellMs is uint16_t and the XR1 firmware quantizes to ms, so 3.5 ms is not
+// representable. 4 ms = 250 Hz, the closest integer below the spec; 3 ms =
+// 333 Hz, the closest above. We pick 4 ms (slightly slow) over 3 ms to keep
+// some margin for the XR1 hop loop's per-channel reconfig overhead. Real
+// AFHDS-2A hops at ~656 Hz (1.5 ms), so 250 Hz is already a footprint
+// approximation regardless.
 bool xr1ModeFlyskyStart() {
-    // AFHDS 2A: GFSK 250 kbps, 16 channels over 2.4 GHz, ~1.5 ms hop.
-    // 1.5 ms is too fast for UART round-trip (PING alone takes ~10 ms),
-    // so we clamp to 5 ms and label [APPROXIMATE].
-    const bool ok = startGfskFhss("FlySky AFHDS-2A footprint [APPROX]",
-                                  2408.0f, 2473.0f,  // 16ch × 4.33 MHz spacing
-                                  16, 5,
-                                  250.0f, 50.0f,
-                                  true,
-                                  "GFSK 250k/50k");
-    if (ok) {
-        Serial.println("[XR1-MODE] note: real AFHDS-2A hops every 1.5 ms; clamped to 5 ms here");
-    }
-    return ok;
+    return startGfskFhss("FlySky AFHDS-2A footprint",
+                         2408.0f, 2468.0f,    // 16ch × 4.0 MHz spacing
+                         16, 4,                // 4 ms dwell ≈ 250 Hz (spec ~286 Hz)
+                         250.0f, 125.0f,       // 250 kbps / 125 kHz dev
+                         true,                 // pseudo-random hop
+                         "GFSK 250k/125k");
 }
 
 // ----- public: DJI OcuSync energy approximation ----------------------------

@@ -419,6 +419,44 @@ static unsigned long      _lastTxMs = 0;
 // queue saturation that bit the 5 Hz path.
 static constexpr unsigned long RID_TX_INTERVAL_MS = 1000;
 
+// Re-prime the controller with a full 24-byte ODID Location payload and
+// (re)start advertising. Safe to call any time after NimBLE is up.
+//
+// Why this exists separately from bleInit(): ridStop() calls _adv->stop(),
+// which leaves the controller silent. Subsequent setAdvertisementData()
+// updates from bleTransmitOdid() only stage host-side bytes -- without
+// _adv->start() having run since the last stop, nothing reaches the air.
+// Modes 1-6 of a SENTRY-RF acceptance run worked because they inherited
+// the cold-boot start; modes 7-15 produced 0 BLE-RID decodes because the
+// first inter-mode 'q' broke the invariant and no later code re-armed.
+static bool bleArmFull() {
+    if (_adv == nullptr) return false;
+
+    // Populate the drone state before encoding so the Location message
+    // carries real lat/lon/alt and not zeros.
+    initDroneDefaults();
+
+    uint8_t tempMsg[ODID_MSG_SIZE];
+    buildLocationMsg(tempMsg);
+
+    uint8_t svc[1 + BLE4_ODID_MSG_SIZE];
+    svc[0] = 0x00;  // initial AD counter; rotation resumes via bleTransmitOdid
+    memcpy(svc + 1, tempMsg, BLE4_ODID_MSG_SIZE);
+
+    NimBLEAdvertisementData advData;
+    advData.setFlags(0x06);  // LE General Disc + BR/EDR Not Supported
+    advData.setServiceData(
+        NimBLEUUID((uint16_t)0xFFFA),
+        std::string(reinterpret_cast<const char*>(svc), sizeof(svc)));
+    _adv->setAdvertisementData(advData);
+
+    if (!_adv->start()) {
+        Serial.println("[RID] _adv->start() FAILED in bleArmFull()");
+        return false;
+    }
+    return true;
+}
+
 static bool bleInit() {
     if (_bleReady) return true;
 
@@ -436,37 +474,7 @@ static bool bleInit() {
     }
     _adv->setConnectableMode(BLE_GAP_CONN_MODE_NON);
 
-    // Set the FULL 24-byte ODID Location message at init time, not a
-    // 2-byte placeholder. SENTRY-RF's raw-AD walk (per docs/33.md)
-    // confirmed the previous 2-byte placeholder was what reached the
-    // air -- the 1 Hz stop/set/start cycle in bleTransmitOdid never
-    // successfully updated the payload because the main loop's
-    // SX1262 SPI / OLED I2C / XR1 UART blocking ops corrupt the HCI
-    // command sequence mid-flight. Static one-shot bypasses that.
-    //
-    // _drone fields are read by buildLocationMsg, so populate them
-    // here too -- ridInit() will (idempotently) call this again
-    // later. Without this the Location msg encodes (0,0) before
-    // ridInit runs.
-    initDroneDefaults();
-
-    uint8_t tempMsg[ODID_MSG_SIZE];
-    buildLocationMsg(tempMsg);
-
-    uint8_t initSvc[1 + BLE4_ODID_MSG_SIZE];
-    initSvc[0] = 0x00;  // counter
-    memcpy(initSvc + 1, tempMsg, BLE4_ODID_MSG_SIZE);
-
-    NimBLEAdvertisementData initData;
-    initData.setFlags(0x06);  // LE General Disc + BR/EDR Not Supported
-    initData.setServiceData(
-        NimBLEUUID((uint16_t)0xFFFA),
-        std::string(reinterpret_cast<const char*>(initSvc), sizeof(initSvc)));
-    _adv->setAdvertisementData(initData);
-    if (!_adv->start()) {
-        Serial.println("[RID] initial _adv->start() FAILED");
-        return false;
-    }
+    if (!bleArmFull()) return false;
 
     _bleReady = true;
     Serial.printf("[RID] NimBLE init: full 24B ODID Location set once, power=%d dBm\n", actualDbm);
@@ -526,6 +534,15 @@ void ridStart() {
     if (!bleInit()) {
         Serial.println("[RID] BLE init failed -- cannot start RID");
         return;
+    }
+    // Re-arm advertising in case a prior ridStop() called _adv->stop().
+    // bleArmFull() reloads the full 24-byte Location payload and calls
+    // _adv->start(); both are safe if advertising is already active
+    // (NimBLE returns early). Without this, the second-and-later ridStart
+    // would set _ridRunning=true but the controller would stay silent,
+    // producing 0 BLE-RID decodes -- the modes 7-15 acceptance failure.
+    if (!bleArmFull()) {
+        Serial.println("[RID] BLE re-arm failed -- payload may not reach the air");
     }
     _bleCount = 0;
     memset(_bleAdCounters, 0, sizeof(_bleAdCounters));

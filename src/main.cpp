@@ -70,8 +70,8 @@ static void printHelp() {
     Serial.println("  u  Custom LoRa    u?=settings  uf/us/ub/ur/uh/up/uw=config");
     Serial.println("  x1-x4 ELRS 2.4G  [PACKET-AUTH + CRC-14 per-nonce]");
     Serial.println("  x5 Ghost 2.4G    [FOOTPRINT, proprietary]");
-    Serial.println("  x6 FrSky D16     [FOOTPRINT, GFSK only]");
-    Serial.println("  x7 FlySky 2A     [FOOTPRINT, GFSK only]");
+    Serial.println("  x6/f16 FrSky D16  [FOOTPRINT, GFSK 128k/80k, 47ch ~111Hz]");
+    Serial.println("  x7/f17 FlySky 2A  [FOOTPRINT, GFSK 250k/125k, 16ch ~250Hz]");
     Serial.println("  x8 DJI Energy    [FOOTPRINT, not OFDM]");
     Serial.println("  x9 Generic 2.4G   args: L|F <params...>");
     Serial.println("  xq Stop XR1       (leaves sub-GHz running)");
@@ -521,24 +521,59 @@ static void handleSerialCommands() {
         if (powerRampGetParams().running) menuSetState(STATE_RAMP_ACTIVE);
         break;
 
-    case 'f': { // Infrastructure false positive modes — f1/f2/f3
-        delay(50);
-        if (Serial.available()) {
-            char c = Serial.read();
-            stopCurrentMode();
-            switch (c) {
-            case '1': infraStart(INFRA_MESHTASTIC); break;
-            case '2': infraStart(INFRA_HELIUM_POC); break;
-            case '3': infraStart(INFRA_LORAWAN_EU); break;
-            default:
-                Serial.println("f1=Meshtastic f2=Helium f3=LoRaWAN-EU868");
-                break;
-            }
-            if (c >= '1' && c <= '3' && infraGetParams().running) {
-                menuSetState(STATE_INFRA_ACTIVE);
-            }
-        } else {
-            Serial.println("f1=Meshtastic f2=Helium f3=LoRaWAN-EU868");
+    case 'f': { // Infrastructure FP + protocol footprints — f1/f2/f3, f16/f17
+        delay(80);  // allow multi-digit suffix to arrive
+        if (!Serial.available()) {
+            Serial.println("f1=Meshtastic f2=Helium f3=LoRaWAN-EU868 "
+                           "f16=FrSky-D16 f17=FlySky-AFHDS2A");
+            break;
+        }
+        // Multi-digit parse: f1 / f16 / f17 all valid. Read up to 3 digits,
+        // extending the per-char wait so a slow terminal doesn't truncate.
+        int num = 0;
+        int digits = 0;
+        unsigned long deadline = millis() + 80;
+        while (digits < 3 && millis() < deadline) {
+            if (!Serial.available()) { delay(2); continue; }
+            char c = Serial.peek();
+            if (c < '0' || c > '9') break;
+            Serial.read();
+            num = num * 10 + (c - '0');
+            digits++;
+            deadline = millis() + 40;
+        }
+        if (digits == 0) {
+            Serial.println("f1=Meshtastic f2=Helium f3=LoRaWAN-EU868 "
+                           "f16=FrSky-D16 f17=FlySky-AFHDS2A");
+            break;
+        }
+
+        stopCurrentMode();
+        switch (num) {
+        case 1:
+            infraStart(INFRA_MESHTASTIC);
+            if (infraGetParams().running) menuSetState(STATE_INFRA_ACTIVE);
+            break;
+        case 2:
+            infraStart(INFRA_HELIUM_POC);
+            if (infraGetParams().running) menuSetState(STATE_INFRA_ACTIVE);
+            break;
+        case 3:
+            infraStart(INFRA_LORAWAN_EU);
+            if (infraGetParams().running) menuSetState(STATE_INFRA_ACTIVE);
+            break;
+        case 16:
+            if (xr1ModeFrskyStart())  menuSetState(STATE_XR1_ACTIVE);
+            else Serial.println("[XR1-MODE] FrSky D16 start failed");
+            break;
+        case 17:
+            if (xr1ModeFlyskyStart()) menuSetState(STATE_XR1_ACTIVE);
+            else Serial.println("[XR1-MODE] FlySky AFHDS-2A start failed");
+            break;
+        default:
+            Serial.printf("Unknown f-subcommand: f%d. "
+                          "Try f1/f2/f3/f16/f17.\n", num);
+            break;
         }
         break;
     }
