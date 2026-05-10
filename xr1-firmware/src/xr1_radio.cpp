@@ -226,15 +226,35 @@ int16_t xr1RadioSetLoRa(uint8_t sf, float bwKhz, uint8_t cr) {
 }
 
 int16_t xr1RadioSetFSK(float brKbps, float devKhz) {
-    // beginGFSK resets packet type to GFSK and applies LDO; re-pin freq and
-    // power after it returns, and reinstall the RF switch table.
-    int16_t rc = s_radio.beginGFSK(brKbps, devKhz, /*rxBw*/ 156.2f,
-                                   /*preamble*/ 16, LR1121_TCXO_VOLTAGE);
+    // Use the LR1120 7-arg beginGFSK with explicit freq + power.
+    //
+    // The 5-arg LR11x0::beginGFSK(br, freqDev, rxBw, preamble, tcxo) overload
+    // is HIDDEN by C++ name lookup -- LR1120 declares its own
+    // beginGFSK(freq=434, br=4.8, freqDev=5, rxBw=156.2, power=10,
+    //           preamble=16, tcxo=1.6)
+    // with all defaults, which shadows the base. A 5-arg call therefore
+    // resolves to LR1120::beginGFSK with (brKbps -> freq, devKhz -> br,
+    // 156.2 -> freqDev, 16 -> rxBw, tcxo -> power) -- the bitrate is
+    // interpreted as a frequency in MHz. The old 250/50 params accidentally
+    // landed inside [150,960] so setFrequency() didn't error, but the chip
+    // was programmed at 250 MHz with bitrate 50 kbps and freqDev 156.2 kHz
+    // (silently wrong). The new 128/80 params drop below 150 MHz and trip
+    // RADIOLIB_ERR_INVALID_FREQUENCY (-12) as a hard fail.
+    //
+    // Spelling out all 7 args binds to LR1120::beginGFSK unambiguously and
+    // configures freq + power inside the call, so the post-hoc setFrequency/
+    // applyPower are no longer needed.
+    int16_t rc = s_radio.beginGFSK(/*freq*/     s_status.freqMhz,
+                                   /*br*/       brKbps,
+                                   /*freqDev*/  devKhz,
+                                   /*rxBw*/     467.0f,
+                                   /*power*/    s_status.powerDbm,
+                                   /*preamble*/ 16,
+                                   /*tcxo*/     LR1121_TCXO_VOLTAGE);
     if (rc != RADIOLIB_ERR_NONE) { s_status.lastError = rc; return rc; }
     s_radio.setRegulatorDCDC();
+    // Per RadioLib issue #1295, setRfSwitchTable must run after begin().
     s_radio.setRfSwitchTable(XR1_RFSW_DIO_PINS, XR1_RFSW_TABLE);
-    s_radio.setFrequency(s_status.freqMhz);
-    applyPower(s_status.powerDbm);
     s_status.mod = XR1_MOD_GFSK;
     s_status.brKbps = brKbps;
     s_status.devKhz = devKhz;
